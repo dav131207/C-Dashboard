@@ -778,7 +778,7 @@ html[data-theme="dark"] .brand-mark img {
 
 .bt-zoom {
   display: grid;
-  grid-template-rows: 24px repeat(7, 1fr);
+  grid-template-runs: 24px repeat(7, 1fr);
   gap: 2px;
   background: var(--panel);
   padding: 12px;
@@ -907,7 +907,6 @@ html[data-theme="dark"] .brand-mark img {
 
 (function () {
   // ----------------- CONFIGURATION -----------------
-  // Adjust these if your repo / branch / usernames differ.
   const CONFIG = {
     dataBaseUrl: 'https://raw.githubusercontent.com/dav131207/C-Dashboard/main/data',
     profiles: {
@@ -932,7 +931,7 @@ html[data-theme="dark"] .brand-mark img {
         verified: false,
       },
     },
-    daysWindow: 365, // how many trailing days to expose to the dashboard
+    daysWindow: 365,
   };
 
   // ----------------- HELPERS -----------------
@@ -955,14 +954,11 @@ html[data-theme="dark"] .brand-mark img {
     return res.json();
   };
 
-  // Try fetching, return null if missing (some profiles may not have all files yet)
   const tryFetchJson = async (path) => {
     try { return await fetchJson(path); } catch (e) { console.warn(`[adapter] ${path} not available:`, e.message); return null; }
   };
 
   // ----------------- TRANSFORMERS -----------------
-
-  // Per-post → dashboard POSTS entry
   const mapPostType = (m) => {
     if (m.media_product_type === 'REELS') return 'reel';
     if (m.media_type === 'CAROUSEL_ALBUM') return 'carousel';
@@ -976,7 +972,6 @@ html[data-theme="dark"] .brand-mark img {
     return firstLine.length > 80 ? firstLine.slice(0, 77) + '…' : firstLine;
   };
 
-  // Generate a deterministic swatch color from the post id
   const swatchFor = (id) => {
     const palette = ['#3f3a36', '#c7903f', '#7a8a55', '#1d1d1b', '#3a5a3a', '#9a4a3a', '#dca087', '#e8d4b8', '#1d2a3a'];
     let h = 0;
@@ -984,11 +979,21 @@ html[data-theme="dark"] .brand-mark img {
     return palette[Math.abs(h) % palette.length];
   };
 
+  // ANGEPASST: Holt die ads_integration Daten aus der JSON
   const transformPosts = (mediaArray, username) => {
     const sorted = [...(mediaArray || [])].sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
     return sorted.map((m) => {
       const i = m.insights || {};
-      // Local thumbnail path in repo: data/thumbnails/<username>/<media_id>.jpg
+      const ads = m.ads_integration || {
+        is_collab: false,
+        collab_partner_username: null,
+        spend_eur: 0.0,
+        paid_impressions: 0,
+        organic_impressions_clean: i.impressions || 0,
+        roi_link_clicks: 0,
+        has_active_ads: false
+      };
+      
       const thumbnail = username ? `${CONFIG.dataBaseUrl}/thumbnails/${username}/${m.id}.jpg` : null;
       return {
         id: m.id,
@@ -1005,11 +1010,11 @@ html[data-theme="dark"] .brand-mark img {
         swatch: swatchFor(m.id),
         thumbnail,
         url: m.permalink || '#',
+        ads: ads // Macht die Werbedaten in React verfügbar
       };
     });
   };
 
-  // Aggregate post-level metric by day, project onto the 365-day window
   const aggregatePostsByDay = (mediaArray, getValue, dates) => {
     const byDay = new Map();
     for (const m of mediaArray || []) {
@@ -1020,9 +1025,6 @@ html[data-theme="dark"] .brand-mark img {
     return dates.map((d) => byDay.get(d) || 0);
   };
 
-  // Take a follower_history array and project a metric to the 365-day window.
-  // For days before the first datapoint, repeat the earliest known value (best-effort).
-  // For days after the last datapoint, repeat the latest.
   const projectHistory = (history, key, dates) => {
     if (!history || !history.length) return dates.map(() => 0);
     const map = new Map(history.map((h) => [h.date, h[key] ?? 0]));
@@ -1033,14 +1035,12 @@ html[data-theme="dark"] .brand-mark img {
       if (map.has(d)) return map.get(d);
       if (d < known[0].date) return first;
       if (d > known[known.length - 1].date) return last;
-      // Between known points — use the most recent earlier value (step interpolation)
       let prev = first;
       for (const k of known) { if (k.date <= d) prev = k.value; else break; }
       return prev;
     });
   };
 
-  // Best-time-to-post heatmap: 7 rows (Sun-Sat) × 24 cols, avg reach
   const buildBestTime = (mediaArray) => {
     const sums = Array.from({ length: 7 }, () => Array(24).fill(0));
     const counts = Array.from({ length: 7 }, () => Array(24).fill(0));
@@ -1056,7 +1056,6 @@ html[data-theme="dark"] .brand-mark img {
     return sums.map((row, i) => row.map((s, j) => counts[i][j] ? Math.round(s / counts[i][j]) : 0));
   };
 
-  // Hashtag extraction from captions
   const buildHashtags = (mediaArray, limit = 10) => {
     const tagStats = new Map();
     for (const m of mediaArray || []) {
@@ -1079,7 +1078,6 @@ html[data-theme="dark"] .brand-mark img {
       .slice(0, limit);
   };
 
-  // Stories completion: most recent story's frame views (limited to first 8 stories of latest session)
   const buildStoriesCompletion = (storiesArray) => {
     if (!storiesArray || !storiesArray.length) return Array(8).fill(0);
     const sorted = [...storiesArray].sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || '')).slice(0, 8);
@@ -1087,20 +1085,15 @@ html[data-theme="dark"] .brand-mark img {
     return sorted.map((s) => s.insights?.reach || s.insights?.impressions || 0);
   };
 
-  // Reels retention: average watch time across reels (we don't have second-by-second curves from the API,
-  // so we build a synthetic decay curve scaled by avg watch time). This is a best-effort placeholder
-  // until per-reel retention is available.
   const buildReelsRetention = (mediaArray) => {
     const reels = (mediaArray || []).filter((m) => m.media_product_type === 'REELS');
     if (!reels.length) return Array.from({ length: 31 }, (_, i) => Math.max(0, 100 - i * 3));
     const avgWatch = reels.map((r) => r.insights?.ig_reels_avg_watch_time || 0).filter((v) => v > 0);
     const meanSec = avgWatch.length ? avgWatch.reduce((a, b) => a + b, 0) / avgWatch.length / 1000 : 10;
-    // Half-life proxy: 50% of viewers drop off around 2× avg-watch-time
     const halfLife = Math.max(meanSec * 2, 4);
     return Array.from({ length: 31 }, (_, i) => Math.round(100 * Math.pow(0.5, i / halfLife)));
   };
 
-  // ----------------- DEMOGRAPHICS TRANSFORMER -----------------
   const transformDemographics = (demo) => {
     const ageOrder = ['13-17', '18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
     const norm = (arr) => arr || [];
@@ -1127,7 +1120,6 @@ html[data-theme="dark"] .brand-mark img {
     };
   };
 
-  // ----------------- BUILD ONE PROFILE -----------------
   const buildProfile = async (cfg, dates) => {
     const u = cfg.username;
     const [postsFile, history, stories] = await Promise.all([
@@ -1142,7 +1134,7 @@ html[data-theme="dark"] .brand-mark img {
     const series = {
       followers: projectHistory(history, 'followers', dates),
       reach: aggregatePostsByDay(media, (m) => m.insights?.reach, dates),
-      impressions: aggregatePostsByDay(media, (m) => m.insights?.views || m.insights?.reach, dates),
+      impressions: aggregatePostsByDay(media, (m) => m.insights?.impressions || m.insights?.reach, dates),
       profile_views: projectHistory(history, 'profile_views', dates),
       website_clicks: projectHistory(history, 'website_clicks', dates),
       engagement: aggregatePostsByDay(media, (m) => (m.insights?.likes || 0) + (m.insights?.comments || 0) + (m.insights?.saved || 0) + (m.insights?.shares || 0), dates),
@@ -1172,7 +1164,6 @@ html[data-theme="dark"] .brand-mark img {
     };
   };
 
-  // ----------------- LOADING UI -----------------
   const showLoading = (msg) => {
     let el = document.getElementById('__data_loading_overlay');
     if (!el) {
@@ -1190,7 +1181,6 @@ html[data-theme="dark"] .brand-mark img {
     if (el) el.style.color = '#a33';
   };
 
-  // ----------------- MAIN -----------------
   showLoading('Lade Instagram-Daten von GitHub…');
 
   (async () => {
@@ -1225,54 +1215,6 @@ html[data-theme="dark"] .brand-mark img {
 </script>
 
 <script type="text/babel" data-presets="react">
-
-// tweaks-panel.jsx
-// Reusable Tweaks shell + form-control helpers.
-//
-// Owns the host protocol (listens for __activate_edit_mode / __deactivate_edit_mode,
-// posts __edit_mode_available / __edit_mode_set_keys / __edit_mode_dismissed) so
-// individual prototypes don't re-roll it. Ships a consistent set of controls so you
-// don't hand-draw <input type="range">, segmented radios, steppers, etc.
-//
-// Usage (in an HTML file that loads React + Babel):
-//
-//   const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
-//     "primaryColor": "#D97757",
-//     "palette": ["#D97757", "#29261b", "#f6f4ef"],
-//     "fontSize": 16,
-//     "density": "regular",
-//     "dark": false
-//   }/*EDITMODE-END*/;
-//
-//   function App() {
-//     const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
-//     return (
-//       <div style={{ fontSize: t.fontSize, color: t.primaryColor }}>
-//         Hello
-//         <TweaksPanel>
-//           <TweakSection label="Typography" />
-//           <TweakSlider label="Font size" value={t.fontSize} min={10} max={32} unit="px"
-//                        onChange={(v) => setTweak('fontSize', v)} />
-//           <TweakRadio  label="Density" value={t.density}
-//                        options={['compact', 'regular', 'comfy']}
-//                        onChange={(v) => setTweak('density', v)} />
-//           <TweakSection label="Theme" />
-//           <TweakColor  label="Primary" value={t.primaryColor}
-//                        options={['#D97757', '#2A6FDB', '#1F8A5B', '#7A5AE0']}
-//                        onChange={(v) => setTweak('primaryColor', v)} />
-//           <TweakColor  label="Palette" value={t.palette}
-//                        options={[['#D97757', '#29261b', '#f6f4ef'],
-//                                  ['#475569', '#0f172a', '#f1f5f9']]}
-//                        onChange={(v) => setTweak('palette', v)} />
-//           <TweakToggle label="Dark mode" value={t.dark}
-//                        onChange={(v) => setTweak('dark', v)} />
-//         </TweaksPanel>
-//       </div>
-//     );
-//   }
-//
-// ─────────────────────────────────────────────────────────────────────────────
-
 const __TWEAKS_STYLE = `
   .twk-panel{position:fixed;right:16px;bottom:16px;z-index:2147483646;width:280px;
     max-height:calc(100vh - 32px);display:flex;flex-direction:column;
@@ -1303,11 +1245,9 @@ const __TWEAKS_STYLE = `
     color:rgba(41,38,27,.72)}
   .twk-lbl>span:first-child{font-weight:500}
   .twk-val{color:rgba(41,38,27,.5);font-variant-numeric:tabular-nums}
-
   .twk-sect{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
     color:rgba(41,38,27,.45);padding:10px 0 0}
   .twk-sect:first-child{padding-top:0}
-
   .twk-field{appearance:none;box-sizing:border-box;width:100%;min-width:0;height:26px;padding:0 8px;
     border:.5px solid rgba(0,0,0,.1);border-radius:7px;
     background:rgba(255,255,255,.6);color:inherit;font:inherit;outline:none}
@@ -1315,7 +1255,6 @@ const __TWEAKS_STYLE = `
   select.twk-field{padding-right:22px;
     background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='rgba(0,0,0,.5)' d='M0 0h10L5 6z'/></svg>");
     background-repeat:no-repeat;background-position:right 8px center}
-
   .twk-slider{appearance:none;-webkit-appearance:none;width:100%;height:4px;margin:6px 0;
     border-radius:999px;background:rgba(0,0,0,.12);outline:none}
   .twk-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
@@ -1323,7 +1262,6 @@ const __TWEAKS_STYLE = `
     border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:default}
   .twk-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;
     background:#fff;border:.5px solid rgba(0,0,0,.12);box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:default}
-
   .twk-seg{position:relative;display:flex;padding:2px;border-radius:8px;
     background:rgba(0,0,0,.06);user-select:none}
   .twk-seg-thumb{position:absolute;top:2px;bottom:2px;border-radius:6px;
@@ -1334,14 +1272,12 @@ const __TWEAKS_STYLE = `
     background:transparent;color:inherit;font:inherit;font-weight:500;min-height:22px;
     border-radius:6px;cursor:default;padding:4px 6px;line-height:1.2;
     overflow-wrap:anywhere}
-
   .twk-toggle{position:relative;width:32px;height:18px;border:0;border-radius:999px;
     background:rgba(0,0,0,.15);transition:background .15s;cursor:default;padding:0}
   .twk-toggle[data-on="1"]{background:#34c759}
   .twk-toggle i{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
     background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
   .twk-toggle[data-on="1"] i{transform:translateX(14px)}
-
   .twk-num{display:flex;align-items:center;box-sizing:border-box;min-width:0;height:26px;padding:0 0 0 8px;
     border:.5px solid rgba(0,0,0,.1);border-radius:7px;background:rgba(255,255,255,.6)}
   .twk-num-lbl{font-weight:500;color:rgba(41,38,27,.6);cursor:ew-resize;
@@ -1352,20 +1288,17 @@ const __TWEAKS_STYLE = `
   .twk-num input::-webkit-inner-spin-button,.twk-num input::-webkit-outer-spin-button{
     -webkit-appearance:none;margin:0}
   .twk-num-unit{padding-right:8px;color:rgba(41,38,27,.45)}
-
   .twk-btn{appearance:none;height:26px;padding:0 12px;border:0;border-radius:7px;
     background:rgba(0,0,0,.78);color:#fff;font:inherit;font-weight:500;cursor:default}
   .twk-btn:hover{background:rgba(0,0,0,.88)}
   .twk-btn.secondary{background:rgba(0,0,0,.06);color:inherit}
   .twk-btn.secondary:hover{background:rgba(0,0,0,.1)}
-
   .twk-swatch{appearance:none;-webkit-appearance:none;width:56px;height:22px;
     border:.5px solid rgba(0,0,0,.1);border-radius:6px;padding:0;cursor:default;
     background:transparent;flex-shrink:0}
   .twk-swatch::-webkit-color-swatch-wrapper{padding:0}
   .twk-swatch::-webkit-color-swatch{border:0;border-radius:5.5px}
   .twk-swatch::-moz-color-swatch{border:0;border-radius:5.5px}
-
   .twk-chips{display:flex;gap:6px}
   .twk-chip{position:relative;appearance:none;flex:1;min-width:0;height:46px;
     padding:0;border:0;border-radius:6px;overflow:hidden;cursor:default;
@@ -1383,62 +1316,31 @@ const __TWEAKS_STYLE = `
     filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))}
 `;
 
-// ── useTweaks ───────────────────────────────────────────────────────────────
-// Single source of truth for tweak values. setTweak persists via the host
-// (__edit_mode_set_keys → host rewrites the EDITMODE block on disk).
 function useTweaks(defaults) {
   const [values, setValues] = React.useState(defaults);
-  // Accepts either setTweak('key', value) or setTweak({ key: value, ... }) so a
-  // useState-style call doesn't write a "[object Object]" key into the persisted
-  // JSON block.
   const setTweak = React.useCallback((keyOrEdits, val) => {
     const edits = typeof keyOrEdits === 'object' && keyOrEdits !== null
       ? keyOrEdits : { [keyOrEdits]: val };
     setValues((prev) => ({ ...prev, ...edits }));
     window.parent.postMessage({ type: '__edit_mode_set_keys', edits }, '*');
-    // Same-window signal so in-page listeners (deck-stage rail thumbnails)
-    // can react — the parent message only reaches the host, not peers.
     window.dispatchEvent(new CustomEvent('tweakchange', { detail: edits }));
   }, []);
   return [values, setTweak];
 }
 
-// ── TweaksPanel ─────────────────────────────────────────────────────────────
-// Floating shell. Registers the protocol listener BEFORE announcing
-// availability — if the announce ran first, the host's activate could land
-// before our handler exists and the toolbar toggle would silently no-op.
-// The close button posts __edit_mode_dismissed so the host's toolbar toggle
-// flips off in lockstep; the host echoes __deactivate_edit_mode back which
-// is what actually hides the panel.
 function TweaksPanel({ title = 'Tweaks', noDeckControls = false, children }) {
   const [open, setOpen] = React.useState(false);
   const dragRef = React.useRef(null);
-  // Auto-inject a rail toggle when a <deck-stage> is on the page. The
-  // toggle drives the deck's per-viewer _railVisible via window message;
-  // state is mirrored from the same localStorage key the deck reads so
-  // the control reflects reality across reloads. The mechanism is the
-  // message — authors who want custom placement can post it directly
-  // and pass noDeckControls to suppress this one.
-  const hasDeckStage = React.useMemo(
-    () => typeof document !== 'undefined' && !!document.querySelector('deck-stage'),
-    [],
-  );
-  // deck-stage enables its rail in connectedCallback, but this panel can
-  // mount before that element has upgraded. The initial read catches the
-  // common case; the listener covers mounting first. (Older deck-stage.js
-  // copies still wait for the host's __omelette_rail_enabled postMessage —
-  // same listener handles those.)
-  const [railEnabled, setRailEnabled] = React.useState(
-    () => hasDeckStage && !!document.querySelector('deck-stage')?._railEnabled,
-  );
+  const hasDeckStage = React.useMemo(() => typeof document !== 'undefined' && !!document.querySelector('deck-stage'), []);
+  const [railEnabled, setRailEnabled] = React.useState(() => hasDeckStage && !!document.querySelector('deck-stage')?._railEnabled);
+  
   React.useEffect(() => {
     if (!hasDeckStage || railEnabled) return undefined;
-    const onMsg = (e) => {
-      if (e.data && e.data.type === '__omelette_rail_enabled') setRailEnabled(true);
-    };
+    const onMsg = (e) => { if (e.data && e.data.type === '__omelette_rail_enabled') setRailEnabled(true); };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
   }, [hasDeckStage, railEnabled]);
+
   const [railVisible, setRailVisible] = React.useState(() => {
     try { return localStorage.getItem('deck-stage.railVisible') !== '0'; } catch (e) { return true; }
   });
@@ -1517,13 +1419,10 @@ function TweaksPanel({ title = 'Tweaks', noDeckControls = false, children }) {
   return (
     <>
       <style>{__TWEAKS_STYLE}</style>
-      <div ref={dragRef} className="twk-panel" data-noncommentable=""
-           style={{ right: offsetRef.current.x, bottom: offsetRef.current.y }}>
+      <div ref={dragRef} className="twk-panel" data-noncommentable="" style={{ right: offsetRef.current.x, bottom: offsetRef.current.y }}>
         <div className="twk-hd" onMouseDown={onDragStart}>
           <b>{title}</b>
-          <button className="twk-x" aria-label="Close tweaks"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={dismiss}>✕</button>
+          <button className="twk-x" aria-label="Close tweaks" onMouseDown={(e) => e.stopPropagation()} onClick={dismiss}>✕</button>
         </div>
         <div className="twk-body">
           {children}
@@ -1538,36 +1437,20 @@ function TweaksPanel({ title = 'Tweaks', noDeckControls = false, children }) {
   );
 }
 
-// ── Layout helpers ──────────────────────────────────────────────────────────
-
-function TweakSection({ label, children }) {
-  return (
-    <>
-      <div className="twk-sect">{label}</div>
-      {children}
-    </>
-  );
-}
-
+function TweakSection({ label, children }) { return ( <><div className="twk-sect">{label}</div>{children}</> ); }
 function TweakRow({ label, value, children, inline = false }) {
   return (
     <div className={inline ? 'twk-row twk-row-h' : 'twk-row'}>
-      <div className="twk-lbl">
-        <span>{label}</span>
-        {value != null && <span className="twk-val">{value}</span>}
-      </div>
+      <div className="twk-lbl"><span>{label}</span>{value != null && <span className="twk-val">{value}</span>}</div>
       {children}
     </div>
   );
 }
 
-// ── Controls ────────────────────────────────────────────────────────────────
-
 function TweakSlider({ label, value, min = 0, max = 100, step = 1, unit = '', onChange }) {
   return (
     <TweakRow label={label} value={`${value}${unit}`}>
-      <input type="range" className="twk-slider" min={min} max={max} step={step}
-             value={value} onChange={(e) => onChange(Number(e.target.value))} />
+      <input type="range" className="twk-slider" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} />
     </TweakRow>
   );
 }
@@ -1576,9 +1459,7 @@ function TweakToggle({ label, value, onChange }) {
   return (
     <div className="twk-row twk-row-h">
       <div className="twk-lbl"><span>{label}</span></div>
-      <button type="button" className="twk-toggle" data-on={value ? '1' : '0'}
-              role="switch" aria-checked={!!value}
-              onClick={() => onChange(!value)}><i /></button>
+      <button type="button" className="twk-toggle" data-on={value ? '1' : '0'} role="switch" aria-checked={!!value} onClick={() => onChange(!value)}><i /></button>
     </div>
   );
 }
@@ -1586,28 +1467,18 @@ function TweakToggle({ label, value, onChange }) {
 function TweakRadio({ label, value, options, onChange }) {
   const trackRef = React.useRef(null);
   const [dragging, setDragging] = React.useState(false);
-  // The active value is read by pointer-move handlers attached for the lifetime
-  // of a drag — ref it so a stale closure doesn't fire onChange for every move.
   const valueRef = React.useRef(value);
   valueRef.current = value;
 
-  // Segments wrap mid-word once per-segment width runs out. The track is
-  // ~248px (280 panel − 28 body pad − 4 seg pad), each button loses 12px
-  // to its own padding, and 11.5px system-ui averages ~6.3px/char — so 2
-  // options fit ~16 chars each, 3 fit ~10. Past that (or >3 options), fall
-  // back to a dropdown rather than wrap.
   const labelLen = (o) => String(typeof o === 'object' ? o.label : o).length;
   const maxLen = options.reduce((m, o) => Math.max(m, labelLen(o)), 0);
   const fitsAsSegments = maxLen <= ({ 2: 16, 3: 10 }[options.length] ?? 0);
   if (!fitsAsSegments) {
-    // <select> emits strings — map back to the original option value so the
-    // fallback stays type-preserving (numbers, booleans) like the segment path.
     const resolve = (s) => {
       const m = options.find((o) => String(typeof o === 'object' ? o.value : o) === s);
       return m === undefined ? s : typeof m === 'object' ? m.value : m;
     };
-    return <TweakSelect label={label} value={value} options={options}
-                        onChange={(s) => onChange(resolve(s))} />;
+    return <TweakSelect label={label} value={value} options={options} onChange={(s) => onChange(resolve(s))} />;
   }
   const opts = options.map((o) => (typeof o === 'object' ? o : { value: o, label: o }));
   const idx = Math.max(0, opts.findIndex((o) => o.value === value));
@@ -1624,32 +1495,17 @@ function TweakRadio({ label, value, options, onChange }) {
     setDragging(true);
     const v0 = segAt(e.clientX);
     if (v0 !== valueRef.current) onChange(v0);
-    const move = (ev) => {
-      if (!trackRef.current) return;
-      const v = segAt(ev.clientX);
-      if (v !== valueRef.current) onChange(v);
-    };
-    const up = () => {
-      setDragging(false);
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
+    const move = (ev) => { if (!trackRef.current) return; const v = segAt(ev.clientX); if (v !== valueRef.current) onChange(v); };
+    const up = () => { setDragging(false); window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
 
   return (
     <TweakRow label={label}>
-      <div ref={trackRef} role="radiogroup" onPointerDown={onPointerDown}
-           className={dragging ? 'twk-seg dragging' : 'twk-seg'}>
-        <div className="twk-seg-thumb"
-             style={{ left: `calc(2px + ${idx} * (100% - 4px) / ${n})`,
-                      width: `calc((100% - 4px) / ${n})` }} />
-        {opts.map((o) => (
-          <button key={o.value} type="button" role="radio" aria-checked={o.value === value}>
-            {o.label}
-          </button>
-        ))}
+      <div ref={trackRef} role="radiogroup" onPointerDown={onPointerDown} className={dragging ? 'twk-seg dragging' : 'twk-seg'}>
+        <div className="twk-seg-thumb" style={{ left: `calc(2px + ${idx} * (100% - 4px) / ${n})`, width: `calc((100% - 4px) / ${n})` }} />
+        {opts.map((o) => ( <button key={o.value} type="button" role="radio" aria-checked={o.value === value}>{o.label}</button> ))}
       </div>
     </TweakRow>
   );
@@ -1659,11 +1515,7 @@ function TweakSelect({ label, value, options, onChange }) {
   return (
     <TweakRow label={label}>
       <select className="twk-field" value={value} onChange={(e) => onChange(e.target.value)}>
-        {options.map((o) => {
-          const v = typeof o === 'object' ? o.value : o;
-          const l = typeof o === 'object' ? o.label : o;
-          return <option key={v} value={v}>{l}</option>;
-        })}
+        {options.map((o) => { const v = typeof o === 'object' ? o.value : o; const l = typeof o === 'object' ? o.label : o; return <option key={v} value={v}>{l}</option>; })}
       </select>
     </TweakRow>
   );
@@ -1672,106 +1524,64 @@ function TweakSelect({ label, value, options, onChange }) {
 function TweakText({ label, value, placeholder, onChange }) {
   return (
     <TweakRow label={label}>
-      <input className="twk-field" type="text" value={value} placeholder={placeholder}
-             onChange={(e) => onChange(e.target.value)} />
+      <input className="twk-field" type="text" value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
     </TweakRow>
   );
 }
 
 function TweakNumber({ label, value, min, max, step = 1, unit = '', onChange }) {
-  const clamp = (n) => {
-    if (min != null && n < min) return min;
-    if (max != null && n > max) return max;
-    return n;
-  };
+  const clamp = (n) => { if (min != null && n < min) return min; if (max != null && n > max) return max; return n; };
   const startRef = React.useRef({ x: 0, val: 0 });
   const onScrubStart = (e) => {
-    e.preventDefault();
-    startRef.current = { x: e.clientX, val: value };
+    e.preventDefault(); startRef.current = { x: e.clientX, val: value };
     const decimals = (String(step).split('.')[1] || '').length;
     const move = (ev) => {
-      const dx = ev.clientX - startRef.current.x;
-      const raw = startRef.current.val + dx * step;
-      const snapped = Math.round(raw / step) * step;
-      onChange(clamp(Number(snapped.toFixed(decimals))));
+      const dx = ev.clientX - startRef.current.x; const raw = startRef.current.val + dx * step;
+      const snapped = Math.round(raw / step) * step; onChange(clamp(Number(snapped.toFixed(decimals))));
     };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
   };
   return (
     <div className="twk-num">
       <span className="twk-num-lbl" onPointerDown={onScrubStart}>{label}</span>
-      <input type="number" value={value} min={min} max={max} step={step}
-             onChange={(e) => onChange(clamp(Number(e.target.value)))} />
+      <input type="number" value={value} min={min} max={max} step={step} onChange={(e) => onChange(clamp(Number(e.target.value)))} />
       {unit && <span className="twk-num-unit">{unit}</span>}
     </div>
   );
 }
 
-// Relative-luminance contrast pick — checkmarks drawn over a swatch need to
-// read on both #111 and #fafafa without per-option configuration. Hex input
-// only (#rgb / #rrggbb); named or rgb()/hsl() colors fall through to "light".
 function __twkIsLight(hex) {
   const h = String(hex).replace('#', '');
   const x = h.length === 3 ? h.replace(/./g, (c) => c + c) : h.padEnd(6, '0');
-  const n = parseInt(x.slice(0, 6), 16);
-  if (Number.isNaN(n)) return true;
-  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-  return r * 299 + g * 587 + b * 114 > 148000;
+  const n = parseInt(x.slice(0, 6), 16); if (Number.isNaN(n)) return true;
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255; return r * 299 + g * 587 + b * 114 > 148000;
 }
 
 const __TwkCheck = ({ light }) => (
   <svg viewBox="0 0 14 14" aria-hidden="true">
-    <path d="M3 7.2 5.8 10 11 4.2" fill="none" strokeWidth="2.2"
-          strokeLinecap="round" strokeLinejoin="round"
-          stroke={light ? 'rgba(0,0,0,.78)' : '#fff'} />
+    <path d="M3 7.2 5.8 10 11 4.2" fill="none" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" stroke={light ? 'rgba(0,0,0,.78)' : '#fff'} />
   </svg>
 );
 
-// TweakColor — curated color/palette picker. Each option is either a single
-// hex string or an array of 1-5 hex strings; the card adapts — a lone color
-// renders solid, a palette renders colors[0] as the hero (left ~2/3) with the
-// rest stacked in a sharp column on the right. onChange emits the
-// option in the shape it was passed (string stays string, array stays array).
-// Without options it falls back to the native color input for back-compat.
 function TweakColor({ label, value, options, onChange }) {
   if (!options || !options.length) {
     return (
       <div className="twk-row twk-row-h">
         <div className="twk-lbl"><span>{label}</span></div>
-        <input type="color" className="twk-swatch" value={value}
-               onChange={(e) => onChange(e.target.value)} />
+        <input type="color" className="twk-swatch" value={value} onChange={(e) => onChange(e.target.value)} />
       </div>
     );
   }
-  // Native <input type=color> emits lowercase hex per the HTML spec, so
-  // compare case-insensitively. String() guards JSON.stringify(undefined),
-  // which returns the primitive undefined (no .toLowerCase).
-  const key = (o) => String(JSON.stringify(o)).toLowerCase();
-  const cur = key(value);
+  const key = (o) => String(JSON.stringify(o)).toLowerCase(); const cur = key(value);
   return (
     <TweakRow label={label}>
       <div className="twk-chips" role="radiogroup">
         {options.map((o, i) => {
-          const colors = Array.isArray(o) ? o : [o];
-          const [hero, ...rest] = colors;
-          const sup = rest.slice(0, 4);
-          const on = key(o) === cur;
+          const colors = Array.isArray(o) ? o : [o]; const [hero, ...rest] = colors; const sup = rest.slice(0, 4); const on = key(o) === cur;
           return (
-            <button key={i} type="button" className="twk-chip" role="radio"
-                    aria-checked={on} data-on={on ? '1' : '0'}
-                    aria-label={colors.join(', ')} title={colors.join(' · ')}
-                    style={{ background: hero }}
-                    onClick={() => onChange(o)}>
-              {sup.length > 0 && (
-                <span>
-                  {sup.map((c, j) => <i key={j} style={{ background: c }} />)}
-                </span>
-              )}
+            <button key={i} type="button" className="twk-chip" role="radio" aria-checked={on} data-on={on ? '1' : '0'} aria-label={colors.join(', ')} title={colors.join(' · ')} style={{ background: hero }} onClick={() => onChange(o)}>
+              {sup.length > 0 && ( <span> {sup.map((c, j) => <i key={j} style={{ background: c }} />)} </span> )}
               {on && <__TwkCheck light={__twkIsLight(hero)} />}
             </button>
           );
@@ -1781,25 +1591,15 @@ function TweakColor({ label, value, options, onChange }) {
   );
 }
 
-function TweakButton({ label, onClick, secondary = false }) {
-  return (
-    <button type="button" className={secondary ? 'twk-btn secondary' : 'twk-btn'}
-            onClick={onClick}>{label}</button>
-  );
-}
+function TweakButton({ label, onClick, secondary = false }) { return ( <button type="button" className={secondary ? 'twk-btn secondary' : 'twk-btn'} onClick={onClick}>{label}</button> ); }
 
 Object.assign(window, {
-  useTweaks, TweaksPanel, TweakSection, TweakRow,
-  TweakSlider, TweakToggle, TweakRadio, TweakSelect,
-  TweakText, TweakNumber, TweakColor, TweakButton,
+  useTweaks, TweaksPanel, TweakSection, TweakRow, TweakSlider, TweakToggle, TweakRadio, TweakSelect, TweakText, TweakNumber, TweakColor, TweakButton,
 });
-
 </script>
 
 <script type="text/babel" data-presets="react">
 // Minimal hand-rolled chart primitives. SVG-based, no chart lib.
-// Each component renders a clean editorial chart with hover tooltip.
-
 const fmt = (n) => {
   if (n == null) return '—';
   if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
@@ -1809,47 +1609,27 @@ const fmt = (n) => {
 const fmtPct = (n, d = 1) => (n == null ? '—' : `${n.toFixed(d)}%`);
 const fmtDate = (iso) => {
   if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso || '—';
-  const d = new Date(iso + 'T00:00:00Z');
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+  const d = new Date(iso + 'T00:00:00Z'); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 };
 const fmtDateShort = (iso) => {
   if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso || '';
-  const d = new Date(iso + 'T00:00:00Z');
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const d = new Date(iso + 'T00:00:00Z'); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 };
 
-// ─────────────────────────────────────────────────────────────────────────
-// LineChart / AreaChart
-//   props: { values, dates, accent, style: 'line'|'area'|'bar', height, formatValue }
-// ─────────────────────────────────────────────────────────────────────────
 function LineChart({ values, dates, accent = '#000', style = 'area', height = 220, formatValue = fmt, compact = false }) {
-  const W = 1000, H = height;
-  const pad = compact ? { l: 0, r: 0, t: 8, b: 0 } : { l: 44, r: 16, t: 12, b: 24 };
-  const innerW = W - pad.l - pad.r;
-  const innerH = H - pad.t - pad.b;
-
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const yMin = min - range * 0.08;
-  const yMax = max + range * 0.08;
-
-  const x = (i) => pad.l + (i / (values.length - 1)) * innerW;
-  const y = (v) => pad.t + (1 - (v - yMin) / (yMax - yMin)) * innerH;
+  const W = 1000, H = height; const pad = compact ? { l: 0, r: 0, t: 8, b: 0 } : { l: 44, r: 16, t: 12, b: 24 };
+  const innerW = W - pad.l - pad.r; const innerH = H - pad.t - pad.b;
+  const min = Math.min(...values); const max = Math.max(...values); const range = max - min || 1;
+  const yMin = min - range * 0.08; const yMax = max + range * 0.08;
+  const x = (i) => pad.l + (i / (values.length - 1)) * innerW; const y = (v) => pad.t + (1 - (v - yMin) / (yMax - yMin)) * innerH;
 
   const pathD = values.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(' ');
   const areaD = pathD + ` L${x(values.length - 1).toFixed(2)},${(pad.t + innerH).toFixed(2)} L${x(0).toFixed(2)},${(pad.t + innerH).toFixed(2)} Z`;
-
-  const [hover, setHover] = React.useState(null);
-  const svgRef = React.useRef(null);
+  const [hover, setHover] = React.useState(null); const svgRef = React.useRef(null);
 
   const onMove = (e) => {
-    const svg = svgRef.current;
-    const rect = svg.getBoundingClientRect();
-    const px = ((e.clientX - rect.left) / rect.width) * W;
-    const i = Math.round(((px - pad.l) / innerW) * (values.length - 1));
-    const clamped = Math.max(0, Math.min(values.length - 1, i));
-    setHover(clamped);
+    const svg = svgRef.current; const rect = svg.getBoundingClientRect(); const px = ((e.clientX - rect.left) / rect.width) * W;
+    const i = Math.round(((px - pad.l) / innerW) * (values.length - 1)); setHover(Math.max(0, Math.min(values.length - 1, i)));
   };
 
   const yTicks = compact ? [] : [yMin, (yMin + yMax) / 2, yMax];
@@ -1857,101 +1637,47 @@ function LineChart({ values, dates, accent = '#000', style = 'area', height = 22
 
   return (
     <div className="chart-wrap" style={{ width: '100%' }}>
-      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
-           style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
-           onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
-        {/* gridlines */}
-        {yTicks.map((t, i) => (
-          <line key={i} x1={pad.l} x2={W - pad.r} y1={y(t)} y2={y(t)} stroke="currentColor" strokeOpacity="0.08" strokeWidth="1" />
-        ))}
-        {/* area or bars */}
+      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+        {yTicks.map((t, i) => ( <line key={i} x1={pad.l} x2={W - pad.r} y1={y(t)} y2={y(t)} stroke="currentColor" strokeOpacity="0.08" strokeWidth="1" /> ))}
         {style === 'area' && <path d={areaD} fill={accent} fillOpacity="0.10" />}
-        {style === 'bar' && values.map((v, i) => {
-          const bw = Math.max(1, innerW / values.length - 1);
-          return <rect key={i} x={x(i) - bw / 2} y={y(v)} width={bw} height={pad.t + innerH - y(v)} fill={accent} fillOpacity={hover === i ? 1 : 0.7} />;
-        })}
+        {style === 'bar' && values.map((v, i) => { const bw = Math.max(1, innerW / values.length - 1); return <rect key={i} x={x(i) - bw / 2} y={y(v)} width={bw} height={pad.t + innerH - y(v)} fill={accent} fillOpacity={hover === i ? 1 : 0.7} />; })}
         {style !== 'bar' && <path d={pathD} fill="none" stroke={accent} strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round" />}
-        {/* labels */}
-        {yTicks.map((t, i) => (
-          <text key={i} x={pad.l - 8} y={y(t) + 4} fontSize="11" fontFamily="JetBrains Mono, monospace" fill="currentColor" fillOpacity="0.5" textAnchor="end">{formatValue(t)}</text>
-        ))}
-        {xTickIdx.map((i) => (
-          <text key={i} x={x(i)} y={H - 6} fontSize="11" fontFamily="JetBrains Mono, monospace" fill="currentColor" fillOpacity="0.5" textAnchor={i === 0 ? 'start' : i === values.length - 1 ? 'end' : 'middle'}>
-            {fmtDateShort(dates[i])}
-          </text>
-        ))}
-        {/* hover */}
-        {hover != null && (
-          <g>
-            <line x1={x(hover)} x2={x(hover)} y1={pad.t} y2={pad.t + innerH} stroke="currentColor" strokeOpacity="0.4" strokeWidth="1" strokeDasharray="2 3" />
-            <circle cx={x(hover)} cy={y(values[hover])} r="4.5" fill={accent} stroke="white" strokeWidth="2" />
-          </g>
-        )}
+        {yTicks.map((t, i) => ( <text key={i} x={pad.l - 8} y={y(t) + 4} fontSize="11" fontFamily="JetBrains Mono, monospace" fill="currentColor" fillOpacity="0.5" textAnchor="end">{formatValue(t)}</text> ))}
+        {xTickIdx.map((i) => ( <text key={i} x={x(i)} y={H - 6} fontSize="11" fontFamily="JetBrains Mono, monospace" fill="currentColor" fillOpacity="0.5" textAnchor={i === 0 ? 'start' : i === values.length - 1 ? 'end' : 'middle'}>{fmtDateShort(dates[i])}</text> ))}{hover != null && ( <g><line x1={x(hover)} x2={x(hover)} y1={pad.t} y2={pad.t + innerH} stroke="currentColor" strokeOpacity="0.4" strokeWidth="1" strokeDasharray="2 3" /><circle cx={x(hover)} cy={y(values[hover])} r="4.5" fill={accent} stroke="white" strokeWidth="2" /></g> )}
       </svg>
-      {hover != null && (
-        <div className="chart-tooltip" style={{ left: `${(x(hover) / W) * 100}%` }}>
-          <div className="t-date">{fmtDate(dates[hover])}</div>
-          <div className="t-val">{formatValue(values[hover])}</div>
-        </div>
-      )}
+      {hover != null && ( <div className="chart-tooltip" style={{ left: `${(x(hover) / W) * 100}%` }}><div className="t-date">{fmtDate(dates[hover])}</div><div className="t-val">{formatValue(values[hover])}</div></div> )}
     </div>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Sparkline (no axes, no tooltip)
-// ─────────────────────────────────────────────────────────────────────────
 function Sparkline({ values, accent = '#000', height = 36, fill = true }) {
-  const W = 200, H = height;
-  if (!values || values.length === 0) return null;
-  const min = Math.min(...values), max = Math.max(...values);
-  const range = max - min || 1;
-  const x = (i) => (i / (values.length - 1)) * W;
-  const y = (v) => H - 2 - ((v - min) / range) * (H - 4);
-  const d = values.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(' ');
-  const areaD = d + ` L${W},${H} L0,${H} Z`;
+  if (!values || values.length === 0) return null; const W = 200, H = height; const min = Math.min(...values), max = Math.max(...values); const range = max - min || 1;
+  const x = (i) => (i / (values.length - 1)) * W; const y = (v) => H - 2 - ((v - min) / range) * (H - 4);
+  const d = values.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(' '); const areaD = d + ` L${W},${H} L0,${H} Z`;
   return (
     <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height, display: 'block' }}>
-      {fill && <path d={areaD} fill={accent} fillOpacity="0.12" />}
-      <path d={d} fill="none" stroke={accent} strokeWidth="1.6" strokeLinejoin="round" />
+      {fill && <path d={areaD} fill={accent} fillOpacity="0.12" />}<path d={d} fill="none" stroke={accent} strokeWidth="1.6" strokeLinejoin="round" />
     </svg>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Horizontal bar list
-// ─────────────────────────────────────────────────────────────────────────
 function HBarList({ items, accent = '#000', valueFormat = (v) => `${v}%`, max }) {
   const m = max ?? Math.max(...items.map(i => i.value));
   return (
     <ul className="hbar-list">
       {items.map((it, i) => (
-        <li key={i} className="hbar-row">
-          <span className="hbar-label">{it.label || it.bucket}</span>
-          <span className="hbar-track">
-            <span className="hbar-fill" style={{ width: `${(it.value / m) * 100}%`, background: accent }} />
-          </span>
-          <span className="hbar-val">{valueFormat(it.value)}</span>
-        </li>
+        <li key={i} className="hbar-row"><span className="hbar-label">{it.label || it.bucket}</span><span className="hbar-track"><span className="hbar-fill" style={{ width: `${(it.value / m) * 100}%`, background: accent }} /></span><span className="hbar-val">{valueFormat(it.value)}</span></li>
       ))}
     </ul>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Heatmap (best time to post — 7 days × 24 hours)
-// ─────────────────────────────────────────────────────────────────────────
 function Heatmap({ grid, accent = '#000', onCellHover }) {
-  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  const max = Math.max(...grid.flat());
-  const [hover, setHover] = React.useState(null);
-
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']; const max = Math.max(...grid.flat()); const [hover, setHover] = React.useState(null);
   return (
     <div className="heatmap" onMouseLeave={() => setHover(null)}>
       <div className="hm-hours">
-        {[0, 3, 6, 9, 12, 15, 18, 21].map(h => (
-          <span key={h} style={{ left: `${(h / 24) * 100}%` }}>{h.toString().padStart(2, '0')}</span>
-        ))}
+        {[0, 3, 6, 9, 12, 15, 18, 21].map(h => ( <span key={h} style={{ left: `${(h / 24) * 100}%` }}>{h.toString().padStart(2, '0')}</span> ))}
       </div>
       <div className="hm-grid">
         {grid.map((row, d) => (
@@ -1960,121 +1686,60 @@ function Heatmap({ grid, accent = '#000', onCellHover }) {
             <div className="hm-cells">
               {row.map((v, h) => {
                 const op = 0.04 + (v / max) * 0.96;
-                return (
-                  <div
-                    key={h}
-                    className={`hm-cell ${hover && hover.d === d && hover.h === h ? 'hover' : ''}`}
-                    style={{ background: accent, opacity: op }}
-                    onMouseEnter={() => setHover({ d, h, v })}
-                    title={`${days[d]} ${h}:00 — engagement ${v}`}
-                  />
-                );
+                return ( <div key={h} className={`hm-cell ${hover && hover.d === d && hover.h === h ? 'hover' : ''}`} style={{ background: accent, opacity: op }} onMouseEnter={() => setHover({ d, h, v })} title={`${days[d]} {h}:00 — engagement ${v}`} /> );
               })}
             </div>
           </div>
         ))}
       </div>
-      {hover && (
-        <div className="hm-readout">
-          <span className="hm-readout-label">{days[hover.d]} · {hover.h.toString().padStart(2, '0')}:00</span>
-          <span className="hm-readout-val">{hover.v} <em>engagement index</em></span>
-        </div>
-      )}
+      {hover && ( <div className="hm-readout"><span className="hm-readout-label">{days[hover.d]} · {hover.h.toString().padStart(2, '0')}:00</span><span className="hm-readout-val">{hover.v} <em>engagement index</em></span></div> )}
     </div>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Donut for gender split
-// ─────────────────────────────────────────────────────────────────────────
 function Donut({ items, accent = '#000' }) {
-  const total = items.reduce((s, it) => s + it.value, 0);
-  const R = 56, r = 38, C = 80;
-  let a0 = -Math.PI / 2;
+  const total = items.reduce((s, it) => s + it.value, 0); const R = 56, r = 38, C = 80; let a0 = -Math.PI / 2;
   const arcs = items.map((it, i) => {
-    const a1 = a0 + (it.value / total) * Math.PI * 2;
-    const large = a1 - a0 > Math.PI ? 1 : 0;
-    const x0 = C + Math.cos(a0) * R, y0 = C + Math.sin(a0) * R;
-    const x1 = C + Math.cos(a1) * R, y1 = C + Math.sin(a1) * R;
-    const x2 = C + Math.cos(a1) * r, y2 = C + Math.sin(a1) * r;
-    const x3 = C + Math.cos(a0) * r, y3 = C + Math.sin(a0) * r;
-    const d = `M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${r},${r} 0 ${large} 0 ${x3},${y3} Z`;
-    const op = 1 - i * 0.35;
-    a0 = a1;
-    return { d, op, ...it };
+    const a1 = a0 + (it.value / total) * Math.PI * 2; const large = a1 - a0 > Math.PI ? 1 : 0;
+    const x0 = C + Math.cos(a0) * R, y0 = C + Math.sin(a0) * R; const x1 = C + Math.cos(a1) * R, y1 = C + Math.sin(a1) * R;
+    const x2 = C + Math.cos(a1) * r, y2 = C + Math.sin(a1) * r; const x3 = C + Math.cos(a0) * r, y3 = C + Math.sin(a0) * r;
+    const d = `M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${r},${r} 0 ${large} 0 ${x3},${y3} Z`; const op = 1 - i * 0.35; a0 = a1; return { d, op, ...it };
   });
   return (
     <div className="donut-wrap">
-      <svg viewBox="0 0 160 160" width="120" height="120" style={{ flexShrink: 0 }}>
-        {arcs.map((a, i) => <path key={i} d={a.d} fill={accent} fillOpacity={a.op} />)}
-      </svg>
+      <svg viewBox="0 0 160 160" width="120" height="120" style={{ flexShrink: 0 }}> {arcs.map((a, i) => <path key={i} d={a.d} fill={accent} fillOpacity={a.op} />)} </svg>
       <ul className="donut-legend">
-        {arcs.map((a, i) => (
-          <li key={i}>
-            <span className="donut-sw" style={{ background: accent, opacity: a.op }} />
-            <span className="donut-lab">{a.label}</span>
-            <span className="donut-pct">{a.value}%</span>
-          </li>
-        ))}
+        {arcs.map((a, i) => ( <li key={i}><span className="donut-sw" style={{ background: accent, opacity: a.op }} /><span className="donut-lab">{a.label}</span><span className="donut-pct">{a.value}%</span></li> ))}
       </ul>
     </div>
   );
 }
 
-// expose
-Object.assign(window, {
-  LineChart, Sparkline, HBarList, Heatmap, Donut,
-  fmt, fmtPct, fmtDate, fmtDateShort,
-});
-
+Object.assign(window, { LineChart, Sparkline, HBarList, Heatmap, Donut, fmt, fmtPct, fmtDate, fmtDateShort, });
 </script>
 
 <script type="text/babel" data-presets="react">
-// Header: brand, profile switcher, date range, refresh
-
 function Header({ profile, profiles, onProfileChange, range, onRangeChange, onRefresh, refreshing }) {
   const [datePickerOpen, setDatePickerOpen] = React.useState(false);
-
   return (
     <header className="dash-header">
       <div className="dash-header-inner">
         <div className="brand">
-          <div className="brand-mark" aria-hidden><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAOEAAADhCAMAAAAJbSJIAAAAilBMVEX///8AAAD8/PwEBAT5+fkICAj29vbb29vu7u7Y2NjFxcXk5OTy8vLf39/o6Oi2trawsLAxMTF6enpPT09nZ2ekpKRcXFy9vb2AgIBISEgUFBSXl5dubm7MzMyNjY0lJSV9fX06Ojqnp6ccHBxEREQtLS1ycnJXV1eRkZGHh4dGRkYhISGcnJw3NzcJHndrAAAMVElEQVR4nO2ceYPqKs/Agda673XfxnHUmXv0+3+9l0DVVgKli8/7T37n3jlntKUEAiQhlDGCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIP4XCPlH/d0a9NtAsz/oha9vWfJ9iXIfBXebUGy3pX4X8EW5IsvUQj+pudjEP+cTf9A4nY/z5azTYq8GKF42/OiPlqvxOil2fV5NRt0qZZaqR3sz5XbiWb90ZcLONl1U8JDzr8nK6kVhos4lebh8fBAk1QjS9eH832QXlSh7sF+nJQseT4FffkZhfgGVECGoZ3v5z9F7aQ7Q7EL4Dh95WXfiLnE8/OxghLI7LuU0ue68NStkYiPHsqs02ZOrwefkg5p2zsmDvFAKfNxB5X2Kb4/zig5A/tHHpGNst/KX7tnosh+b+f0o22CUDDl3m8kLvj4zpwo22Lqf7mAp6+TsxzBivzkammqz+BMSCjFKtK448q5/u7wH7HX/5APNMK9fQNaLOfetgyEhDJ+9u/xf0FC/0qEWk3qlk1Po7lC2A59MBwyf54VU4GGhogKYbupUVAGTQDUJod3/ta216hadwTjv+k3QnvxJ7S+poQ8J1X8LWwtOC7afvDqubeGXBU148SbGmWG9KNg3L/aEAKab3LnLW0JWfpEwuWEtH53ybzRZ1SUhi72WKV+6yBNmZZ4Q8HZNAl4qT6JpdpiaOjT0dFjjXzRqWjEitvGreRDwp49jvUbN8e8SypUIbcOAr7863V7Yao6uyZL6xiGqY8VY+AmYEsLFL+r6WLTk0tININmd0ZLrUNN+MQFz+EoczCzihEp4046ldi6jKTZUNxX7ECI/Z8cckFTrcN0PO+1ut9/eLTbz++PL94vln7kOKL0/pY2V/ax94kaE2HRb2QAXbOnQOyXgfd/uZe/pjsCAbbz3ivx93AvRxXCECXh8N1g6SBVWVftQTgHugRXvQnjGS/GEkqH1bTa4XKNxs1SAwWRePTQuu5uXncrEgdJEbmv72mcqCPNsSKFDmioU8GNc3kQHIYP11mQdZa+UN2KTeg8pzheoy97WgyD3YeH224d3/grEyR8dy9WCXZEnGP6fQNW0V0FNZU8MXDoa95wCwvS3ea6QUsIZi2yXY5GtjXlZs/4+jG06GsBUHorQIaKa45uHZwz1zxEDXCGPQIJN3ZolZOgk/vDyLV5Q5n748ZXcsH1+goD1IeLfYkuzVS+8wCaApMId70KGKgB4xZaJBHwcfhuXCWQc3itJaLFmdA/6FixYWxrO55ZLn9Gm/DUMAznvGVwrrYdfFglh0nB0SRZ5Ye8HHCbXHch6yKemhGfzqkkVCXu4gLIPL0VLctvHqE3DG+m1XC2x76EqGC6Ip+LPyLZSnIrOX7nx6R32mMxcJi048b4ZBPNBv2BVMhxtJrdt5baSu1XUw3zca+omiDaag1XarlWC+wNUOohwVVEMDAHLheGJBNCSL+dCxIb1EVR0nr5RJQ0gzFK/hDesKceRjoeCCrQwo4DzSttstvjlV90CAqZ5CN7kkj3cydEaHTLb8k+Ujba2SNivfSMdHK7/EDUNHpPN7scSbseidr4PRe144BNbPgyCQei01oakBVRBg0ZQaRQK2MpD8TfXChEeMCn4uHk74v0nPztWC7TNLRJ+JtcjieqbUig58Ugjb1dJWBA9xEICLp/KZgmxB1p9N/hiyFzOWy6YKwa8B0/qQtlkvpH1AAah4XsUBLWjJK1a5DGANX3lv3cQIM5VUbBhITl/Kq1MDimb2qACDt3Oigd/uNldu8X2QKhQmk8fNuSyckgZ3Hj0Lp8L/rQ/z8yfwkA9+157iLJel9cyIYSHYY+CLRZa+z+0WrDBxHMP+NBJVUJKV3Jq+A8vvfMJCdW+yx/PTffSX2/EK8FWR+X3EUt/5MkYf1xtG+dpQtN9t0m4ltJkRAkZhNa/wwLpjwmYEcXr2a4zacVJQl4O51vLiBd0lOT3YeHsYcugrxQ0sLFb+yRDaU/jvavEMbl31S44gCwJss16ZYMqsll+52mm4GZlQhuZGNa8X2hWtZilH9BSLJJo4drKDkLBovOz8+VfS1tSGcYReUChULcvOSnP6ccHfJpZ3uW/by+3EiRtbPy3E7HVQhlLNds0e+9EKJVZewxZareStfjrdv332nvFjvEHb2qVMLSZv3Ypf6L0WFsi15w8Z0OL8lzqXfHxzS2HhAFf9V4SohsrR0+LHNkEgSasL5EMCO9FU8ZhLL52m+bY7QvPLsB2EoCovoTHEJKCzSq+DqZYpL+DhRbKnjJTmeQt15xs8ic2D7jGfEeYJ2xRivXMFuuTts9KLxqRmSUlf2/69gAe00d29SowsZ48iAf2NgZF7ck+BHfSlHDiu+qLaIyXP65NPlsoSKUIQCd18C4GsX4iWxZFz9c8xbdlgW5tfWjuVSSoSLcWETfHVagUPZmEJiBbJLSlXP7WJaDA91qUVaGrYFfUBp/OsB48FsmQspV+qCuKgSXH6CZUk6FIehGVMAjwqbbAzmYoeifLLDCqadG3BLmPqUvUglAgxBgXeLxsv7llsZI2Qy1r4tYjimCdblABC2UPKc8LLRqSAypGKjVjdBpZvaXrWffAkIrNijxerceWDZF1uQjl2z0hXs/3UDZmuaDicf5f4SpdbfpRNIcFAg9Gq1hMCsPFViI28kMcZbzzhdWmKugHC9aKjHUYdysa5nTv1YsBHIzzNEhfhJZjDgE/FUwQ6N6vxuyEj6/1e0hdtUx+rDHg46LRRMCyDSzba+o/FGXDNmVTzVWQLFV9XENO+KEom6fzrFKp0zPCan3zoEDC3EPJ5ulkaWY7xbHGJcxXVCTfNr9qIRokSNh6S/irbJAGj7OzjWUVwDYhoG1yFHVVav0SlkOP2mKa+5XZmj/visO03b/z3zYQTOQpaun3UywdWdDjrjuQrgZ+Rrvi9A2oWRrwL0thoT7IjtFQW/plzGVwo50NN2SuyBtsmGVcMDjz+bohwioc8Aa+VyaUiHhzg0KVzDsRtuQ2Var8InYG+XsbnpFC3rNNzeiYf28/oR0m51gxGg0+L9WHIGO4chv3E/UaGlXt1/+hPomAbX3oaKSSEg2UcZVgnZ11QbXBEnaG/6+s7O40DBenybR9GDhKzschrB20N2ZZXx7nhuy79rv3fWv1C5zOsxtvcv2Kyrk8sDPg6EPIGuDrybCb8ltazdEWrKEADzNdHk1tjwbfHt38ErB7UZls1po01GmAEhJCl5jJrem2S74br+Llfv+33F5/1vpzy46gGmiqJpFlExbizm+Gb3uSeRhaj8B54MEJmqFchUkyXC1HARTj23MSa0PungcB/2GlxqKwBlRKEvCLbmvHpoXqrPs1jpPjml5uvuz7chF5Tx+0ADdVLH5SJqlsSiEDRX6pcNG8bC7fzDtYkkdDHwnTEu4KhJk8mYqSi4Y1eFuUJKCtdUMuiXW+yEAVD37d/6+I/JslVRAO96wsxka4L6JAwoTj8fBjxB6+OPwYPQ5glioL+xjGYslFQwUuKykVjLldZpSIku+jUPdYDBzZi+UEZHActNq0EPDxWzaIgM0Ln2Qok6XtFD3MqOUEjF7ObFm2EezdpiUUrFd0o1szcqSpTCocYL9lVypv9IKG54G0frh1o9QsKMk5Ue9iupiLjU5wr3IIo38sNTGoiLQlJyuM5n5pe1oCkOEvYmrv5IJUZjqokuILs/x3qRflcD4TwpoCaju8gpcEHZi8DWRiSDhj6oR5aQnVIbLl62HeTFrMJiF8tjt6y7f+1sXoDbBL+ivOV30mKqfaw9s3QUY/Y1Ffss3JaAxZNOMPFbQJp5eqTXoDTQoZJwqutbeWfU3VRK396VX/nEYP/lrOgBXTYaboN7+9TrfIcI2T7DS5OB5qyptMdC1czL0G5HQU5ecn6zJ73+arQtLMh+wtvKEU/7HROglrPygxGG7Xj57K6Nfz3/HI+3xg4jFm3kuc7tR4NEhf+CKEiFaDr3NeQlKWsDmL8a48bWdtWHiLNKu6ttXZvBkW48usbZ8dBQvnKrW2bDjRWSFd+6g9nP1tr6v7+H5cXePlZrToa+ehmIBqetTXi0G7sxgOh4td8zGz2KZIMLNjyKKp+iYeC44BJrSERUR8vrzn7dPQiKBm73FXhCAIgiAIgiAIgiAIgiAIgiAIgiAIgiAIgiAIgiAIgiAIgiAIgsD5P2PRgXCDNndSAAAAAElFTkSuQmCC" alt="C& logo" /></div>
-          <div className="brand-text">
-            <div className="brand-name">Contemporary And</div>
-            <div className="brand-product">Analytics · Instagram</div>
-          </div>
+          <div className="brand-mark" aria-hidden><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAOEAAADhCAMAAAAJbSJIAAAAilBMVEX///8AAAD8/PwEBAT5+fkICAj29vbb29vu7u7Y2NjFxcXk5OTy8vLf39/o6Oi2trawsLAxMTF6enpPT09nZ2ekpKRcXFy9vb2AgIBISEgUFBSXl5dubm7MzMyNjY0lJSV9fX06Ojqnp6ccHBxEREQtLS1ycnJXV1eRkZGHh4dGRkYhISGcnJw3NzcJHndrAAAMVElEQVR4nO2ceYPqKs/Agda673XfxnHUmXv0+3+9l0DVVgKli8/7T37n3jlntKUEAiQhlDGCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIP4XCPlH/d0a9NtAsz/oha9vWfJ9iXIfBXebUGy3pX4X8EW5IsvUQj+pudjEP+cTf9A4nY/z5azTYq8GKF42/OiPlqvxOil2fV5NRt0qZZaqR3sz5XbiWb90ZcLONl1U8JDzr8nK6kVhos4lebh8fBAk1QjS9eH832QXlSh7sF+nJQseT4FffkZhfgGVECGoZ3v5z9F7aQ7Q7EL4Dh95WXfiLnE8/OxghLI7LuU0ue68NStkYiPHsqs02ZOrwefkg5p2zsmDvFAKfNxB5X2Kb4/zig5A/tHHpGNst/KX7tnosh+b+f0o22CUDDl3m8kLvj4zpwo22Lqf7mAp6+TsxzBivzkammqz+BMSCjFKtK448q5/u7wH7HX/5APNMK9fQNaLOfetgyEhDJ+9u/xf0FC/0qEWk3qlk1Po7lC2A59MBwyf54VU4GGhogKYbupUVAGTQDUJod3/ta216hadwTjv+k3QnvxJ7S+poQ8J1X8LWwtOC7afvDqubeGXBU148SbGmWG9KNg3L/aEAKab3LnLW0JWfpEwuWEtH53ybzRZ1SUhi72WKV+6yBNmZZ4Q8HZNAl4qT6JpdpiaOjT0dFjjXzRqWjEitvGreRDwp49jvUbN8e8SypUIbcOAr7863V7Yao6uyZL6xiGqY8VY+AmYEsLFL+r6WLTk0tININmd0ZLrUNN+MQFz+EoczCzihEp4046ldi6jKTZUNxX7ECI/Z8cckFTrcN0PO+1ut9/eLTbz++PL94vln7kOKL0/pY2V/ax94kaE2HRb2QAXbOnQOyXgfd/uZe/pjsCAbbz3ivx93AvRxXCECXh8N1g6SBVWVftQTgHugRXvQnjGS/GEkqH1bTa4XKNxs1SAwWRePTQuu5uXncrEgdJEbmv72mcqCPNsSKFDmioU8GNc3kQHIYP11mQdZa+UN2KTeg8pzheoy97WgyD3YeH224d3/grEyR8dy9WCXZEnGP6fQNW0V0FNZU8MXDoa95wCwvS3ea6QUsIZi2yXY5GtjXlZs/4+jG06GsBUHorQIaKa45uHZwz1zxEDXCGPQIJN3ZolZOgk/vDyLV5Q5n748ZXcsH1+goD1IeLfYkuzVS+8wCaApMId70KGKgB4xZaJBHwcfhuXCWQc3itJaLFmdA/6FixYWxrO55ZLn9Gm/DUNAznvGVwrrYdfFglh0nB0SRZ5Ye8HHCbXHch6yKemhGfzqkkVCXu4gLIPL0VLctvHqE3DG+m1XC2x76EqGC6Ip+LPyLZSnIrOX7nx6R32mMxcJi048b4ZBPNBv2BVMhxtJrdt5baSu1XUw3zana+omiDaag1XarlWC+wNUOohwVVEMDAHLheGJBNCSL+dCxIb1EVR0nr5RJQ0gzFK/hDesKceRjoeCCrQwo4集中力。
         </div>
-
         <div className="profile-switch" role="tablist" aria-label="Switch profile">
           {Object.values(profiles).map((p) => (
-            <button
-              key={p.id}
-              role="tab"
-              aria-selected={profile.id === p.id}
-              className={`profile-tab ${profile.id === p.id ? 'on' : ''}`}
-              onClick={() => onProfileChange(p.id)}
-            >
+            <button key={p.id} role="tab" aria-selected={profile.id === p.id} className={`profile-tab ${profile.id === p.id ? 'on' : ''}`} onClick={() => onProfileChange(p.id)}>
               <span className="pt-avatar">{p.avatar}</span>
-              <span className="pt-meta">
-                <span className="pt-handle">{p.handle}</span>
-                <span className="pt-count">{fmt(p.followers_total)} followers</span>
-              </span>
+              <span className="pt-meta"><span className="pt-handle">{p.handle}</span><span className="pt-count">{fmt(p.followers_total)} followers</span></span>
             </button>
           ))}
         </div>
-
         <div className="dash-controls">
-          <DateRangePicker
-            range={range}
-            onRangeChange={onRangeChange}
-            open={datePickerOpen}
-            setOpen={setDatePickerOpen}
-          />
+          <DateRangePicker range={range} onRangeChange={onRangeChange} open={datePickerOpen} setOpen={setDatePickerOpen} />
           <button className="btn-icon" onClick={onRefresh} aria-label="Refresh" title="Refresh from Instagram API">
             <svg width="16" height="16" viewBox="0 0 16 16" className={refreshing ? 'spin' : ''}>
-              <path d="M13 8a5 5 0 1 1-1.46-3.54" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              <path d="M13 3v3h-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M13 8a5 5 0 1 1-1.46-3.54" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><path d="M13 3v3h-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </button>
         </div>
@@ -2084,62 +1749,28 @@ function Header({ profile, profiles, onProfileChange, range, onRangeChange, onRe
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Date Range Picker — preset chips + two-month calendar with custom range
-// ─────────────────────────────────────────────────────────────────────────
 function DateRangePicker({ range, onRangeChange, open, setOpen }) {
   const ref = React.useRef(null);
-  React.useEffect(() => {
-    if (!open) return;
-    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
-
-  const fmtRange = () => {
-    const s = new Date(range.start + 'T00:00:00Z');
-    const e = new Date(range.end + 'T00:00:00Z');
-    const opts = { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' };
-    return `${s.toLocaleDateString('en-US', opts)} → ${e.toLocaleDateString('en-US', opts)}`;
-  };
-
-  const presets = [
-    { label: '7 d',  days: 7  },
-    { label: '28 d', days: 28 },
-    { label: '90 d', days: 90 },
-    { label: '12 mo',days: 365},
-  ];
-
-  const setPreset = (days) => {
-    const end = new Date('2026-05-18T00:00:00Z');
-    const start = new Date(end.getTime() - (days - 1) * 86400000);
-    onRangeChange({ start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) });
-  };
-
+  React.useEffect(() => { if (!open) return; const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }; document.addEventListener('mousedown', onDoc); return () => document.removeEventListener('mousedown', onDoc); }, [open]);
+  const fmtRange = () => { const s = new Date(range.start + 'T00:00:00Z'); const e = new Date(range.end + 'T00:00:00Z'); return `${s.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })} → ${e.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}`; };
+  const presets = [ { label: '7 d', days: 7 }, { label: '28 d', days: 28 }, { label: '90 d', days: 90 }, { label: '12 mo', days: 365 } ];
+  const setPreset = (days) => { const end = new Date(); const start = new Date(end.getTime() - (days - 1) * 86400000); onRangeChange({ start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) }); };
   const days = Math.round((new Date(range.end) - new Date(range.start)) / 86400000) + 1;
 
   return (
     <div className="drp" ref={ref}>
       <button className="drp-trigger" onClick={() => setOpen(o => !o)}>
         <svg width="14" height="14" viewBox="0 0 16 16"><rect x="2.5" y="3.5" width="11" height="10" rx="1" fill="none" stroke="currentColor" strokeWidth="1.3"/><path d="M2.5 6h11" stroke="currentColor" strokeWidth="1.3"/><path d="M5 2v3M11 2v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
-          <span className="drp-text">{fmtRange()}</span>
-          <span className="drp-days">{days} days</span>
+        <span className="drp-text">{fmtRange()}</span><span className="drp-days">{days} days</span>
       </button>
       {open && (
         <div className="drp-panel">
-          <div className="drp-presets">
-            {presets.map(p => (
-              <button key={p.label} className={`drp-chip ${days === p.days ? 'on' : ''}`} onClick={() => setPreset(p.days)}>{p.label}</button>
-            ))}
-          </div>
-          <div className="drp-cal">
-            <CalendarMonth range={range} onRangeChange={onRangeChange} monthOffset={-1} />
-            <CalendarMonth range={range} onRangeChange={onRangeChange} monthOffset={0} />
-          </div>
+          <div className="drp-presets">{presets.map(p => ( <button key={p.label} className={`drp-chip ${days === p.days ? 'on' : ''}`} onClick={() => setPreset(p.days)}>{p.label}</button> ))}</div>
+          <div className="drp-cal"><CalendarMonth range={range} onRangeChange={onRangeChange} monthOffset={-1} /><CalendarMonth range={range} onRangeChange={onRangeChange} monthOffset={0} /></div>
           <div className="drp-footer">
             <div className="drp-inputs">
               <label>Start <input type="date" value={range.start} max={range.end} onChange={(e) => onRangeChange({ ...range, start: e.target.value })} /></label>
-              <label>End   <input type="date" value={range.end}   min={range.start} max="2026-05-18" onChange={(e) => onRangeChange({ ...range, end: e.target.value })} /></label>
+              <label>End   <input type="date" value={range.end} min={range.start} max={new Date().toISOString().slice(0,10)} onChange={(e) => onRangeChange({ ...range, end: e.target.value })} /></label>
             </div>
             <button className="drp-apply" onClick={() => setOpen(false)}>Apply</button>
           </div>
@@ -2150,33 +1781,17 @@ function DateRangePicker({ range, onRangeChange, open, setOpen }) {
 }
 
 function CalendarMonth({ range, onRangeChange, monthOffset = 0 }) {
-  const ref = new Date('2026-05-01T00:00:00Z');
-  ref.setUTCMonth(ref.getUTCMonth() + monthOffset);
-  const y = ref.getUTCFullYear(), m = ref.getUTCMonth();
-  const first = new Date(Date.UTC(y, m, 1));
-  const last = new Date(Date.UTC(y, m + 1, 0));
-  const startDay = (first.getUTCDay() + 6) % 7; // Mon=0
-  const daysInMonth = last.getUTCDate();
-  const cells = [];
-  for (let i = 0; i < startDay; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(Date.UTC(y, m, d)));
-  while (cells.length % 7) cells.push(null);
-
-  const startD = new Date(range.start + 'T00:00:00Z');
-  const endD   = new Date(range.end   + 'T00:00:00Z');
-  const today  = new Date('2026-05-18T00:00:00Z');
+  const ref = new Date(); ref.setUTCHours(0,0,0,0); ref.setUTCMonth(ref.getUTCMonth() + monthOffset);
+  const y = ref.getUTCFullYear(), m = ref.getUTCMonth(); const first = new Date(Date.UTC(y, m, 1)); const last = new Date(Date.UTC(y, m + 1, 0));
+  const startDay = (first.getUTCDay() + 6) % 7; const daysInMonth = last.getUTCDate(); const cells = [];
+  for (let i = 0; i < startDay; i++) cells.push(null); for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(Date.UTC(y, m, d))); while (cells.length % 7) cells.push(null);
+  const startD = new Date(range.start + 'T00:00:00Z'); const endD = new Date(range.end + 'T00:00:00Z'); const today = new Date();
 
   const onClick = (d) => {
-    const iso = d.toISOString().slice(0, 10);
-    if (d > today) return;
-    // If single-date click, set start; if click after start, set end
-    if (range.__pickStart || d < startD) {
-      onRangeChange({ start: iso, end: range.end, __pickStart: false });
-    } else if (d > endD || d.getTime() === startD.getTime()) {
-      onRangeChange({ ...range, end: iso, __pickStart: true });
-    } else {
-      onRangeChange({ start: iso, end: range.end });
-    }
+    const iso = d.toISOString().slice(0, 10); if (d > today) return;
+    if (range.__pickStart || d < startD) { onRangeChange({ start: iso, end: range.end, __pickStart: false }); }
+    else if (d > endD || d.getTime() === startD.getTime()) { onRangeChange({ ...range, end: iso, __pickStart: true }); }
+    else { onRangeChange({ start: iso, end: range.end }); }
   };
 
   return (
@@ -2186,18 +1801,8 @@ function CalendarMonth({ range, onRangeChange, monthOffset = 0 }) {
       <div className="cal-grid">
         {cells.map((d, i) => {
           if (!d) return <span key={i} className="cal-empty" />;
-          const inRange = d >= startD && d <= endD;
-          const isStart = d.getTime() === startD.getTime();
-          const isEnd   = d.getTime() === endD.getTime();
-          const future  = d > today;
-          return (
-            <button key={i}
-              className={`cal-day ${inRange ? 'in' : ''} ${isStart ? 'start' : ''} ${isEnd ? 'end' : ''} ${future ? 'future' : ''}`}
-              disabled={future}
-              onClick={() => onClick(d)}>
-              {d.getUTCDate()}
-            </button>
-          );
+          const inRange = d >= startD && d <= endD; const isStart = d.getTime() === startD.getTime(); const isEnd = d.getTime() === endD.getTime(); const future = d > today;
+          return ( <button key={i} className={`cal-day ${inRange ? 'in' : ''} ${isStart ? 'start' : ''} ${isEnd ? 'end' : ''} ${future ? 'future' : ''}`} disabled={future} onClick={() => onClick(d)}>{d.getUTCDate()}</button> );
         })}
       </div>
     </div>
@@ -2205,120 +1810,49 @@ function CalendarMonth({ range, onRangeChange, monthOffset = 0 }) {
 }
 
 Object.assign(window, { Header });
-
 </script>
 
 <script type="text/babel" data-presets="react">
-// Dashboard sections — hero, KPIs, panels, posts grid, modal
-
-function sliceSeries(series, dates, range) {
-  const startIdx = dates.indexOf(range.start);
-  const endIdx = dates.indexOf(range.end);
-  const s = startIdx === -1 ? 0 : startIdx;
-  const e = endIdx === -1 ? dates.length - 1 : endIdx;
-  return {
-    values: series.slice(s, e + 1),
-    dates: dates.slice(s, e + 1),
-  };
-}
-
+function sliceSeries(series, dates, range) { const startIdx = dates.indexOf(range.start); const endIdx = dates.indexOf(range.end); const s = startIdx === -1 ? 0 : startIdx; const e = endIdx === -1 ? dates.length - 1 : endIdx; return { values: series.slice(s, e + 1), dates: dates.slice(s, e + 1), }; }
 const sum = (arr) => arr.reduce((s, v) => s + v, 0);
-const delta = (curr, prev) => {
-  if (!prev) return 0;
-  return ((curr - prev) / prev) * 100;
-};
+const delta = (curr, prev) => { if (!prev) return 0; return ((curr - prev) / prev) * 100; };
 
-// ─────────────────────────────────────────────────────────────────────────
-// Hero — big lede, profile bio, headline metric
-// ─────────────────────────────────────────────────────────────────────────
 function Hero({ profile, range, dates, accent, onMetricClick, chartStyle }) {
-  const followers = sliceSeries(profile.series.followers, dates, range);
-  const curr = followers.values[followers.values.length - 1] || 0;
-  const start = followers.values[0] || 0;
-  const change = curr - start;
-  const pct = delta(curr, start);
-
-  // Compare window — same length immediately before
-  const days = followers.values.length;
-  const startIdx = Math.max(0, dates.indexOf(range.start));
-  const prevWindow = profile.series.followers.slice(Math.max(0, startIdx - days), startIdx);
-  const prevChange = (prevWindow[prevWindow.length - 1] || 0) - (prevWindow[0] || 0);
+  const followers = sliceSeries(profile.series.followers, dates, range); const curr = followers.values[followers.values.length - 1] || 0; const start = followers.values[0] || 0;
+  const change = curr - start; const pct = delta(curr, start); const days = followers.values.length; const startIdx = Math.max(0, dates.indexOf(range.start));
+  const prevWindow = profile.series.followers.slice(Math.max(0, startIdx - days), startIdx); const prevChange = (prevWindow[prevWindow.length - 1] || 0) - (prevWindow[0] || 0);
 
   return (
     <section className="hero">
       <div className="hero-left">
-        <div className="hero-eyebrow">
-          <span className="eb-dot" style={{ background: accent }} />
-          <span>Profile Overview</span>
-          <span className="eb-handle">{profile.handle}</span>
-          {profile.verified && <span className="eb-verified" title="Verified">✓</span>}
-        </div>
-        <h1 className="hero-title">
-          {profile.name}.
-          <span className="hero-sub">{profile.bio}</span>
-        </h1>
-        <div className="hero-meta">
-          <span><em>Based</em> {profile.location}</span>
-          <span><em>Language</em> {profile.language}</span>
-          <span><em>Posts</em> {fmt(profile.posts_total)}</span>
-        </div>
+        <div className="hero-eyebrow"><span className="eb-dot" style={{ background: accent }} /><span>Profile Overview</span><span className="eb-handle">{profile.handle}</span>{profile.verified && <span className="eb-verified" title="Verified">✓</span>}</div>
+        <h1 className="hero-title">{profile.name}.<span className="hero-sub">{profile.bio}</span></h1>
+        <div className="hero-meta"><span><em>Based</em> {profile.location}</span><span><em>Language</em> {profile.language}</span><span><em>Posts</em> {fmt(profile.posts_total)}</span></div>
       </div>
-
       <button className="hero-right" onClick={() => onMetricClick('followers')}>
-        <div className="hero-r-top">
-          <span className="hero-r-label">Followers</span>
-          <span className="hero-r-period">{followers.values.length} days</span>
-        </div>
-        <div className="hero-r-value">
-          {fmt(curr)}
-        </div>
+        <div className="hero-r-top"><span className="hero-r-label">Followers</span><span className="hero-r-period">{followers.values.length} days</span></div>
+        <div className="hero-r-value">{fmt(curr)}</div>
         <div className="hero-r-delta">
-          <span className={`delta ${change >= 0 ? 'up' : 'down'}`}>
-            {change >= 0 ? '↗' : '↘'} {fmt(Math.abs(change))} <em>({fmtPct(Math.abs(pct), 2)})</em>
-          </span>
-          <span className="hero-r-prev">
-            vs. prev. period: {prevChange >= 0 ? '+' : ''}{fmt(prevChange)}
-          </span>
+          <span className={`delta ${change >= 0 ? 'up' : 'down'}`}>{change >= 0 ? '↗' : '↘'} {fmt(Math.abs(change))} <em>({fmtPct(Math.abs(pct), 2)})</em></span>
+          <span className="hero-r-prev">vs. prev. period: {prevChange >= 0 ? '+' : ''}{fmt(prevChange)}</span>
         </div>
-        <div className="hero-r-spark">
-          <Sparkline values={followers.values} accent={accent} height={56} />
-        </div>
-        <div className="hero-r-cta">Open detail →</div>
+        <div className="hero-r-spark"><Sparkline values={followers.values} accent={accent} height={56} /></div><div className="hero-r-cta">Open detail →</div>
       </button>
     </section>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// KPI strip
-// ─────────────────────────────────────────────────────────────────────────
 function KpiStrip({ profile, range, dates, accent, onMetricClick }) {
-  const kpis = [
-    { key: 'reach',          label: 'Reach',          fmt: fmt },
-    { key: 'impressions',    label: 'Impressions',    fmt: fmt },
-    { key: 'engagement',     label: 'Engagement',     fmt: fmt, sub: 'interactions' },
-    { key: 'profile_views',  label: 'Profile Visits', fmt: fmt },
-    { key: 'website_clicks', label: 'Website Clicks', fmt: fmt },
-  ];
-
+  const kpis = [ { key: 'reach', label: 'Reach', fmt: fmt }, { key: 'impressions', label: 'Impressions', fmt: fmt }, { key: 'engagement', label: 'Engagement', fmt: fmt, sub: 'interactions' }, { key: 'profile_views', label: 'Profile Visits', fmt: fmt }, { key: 'website_clicks', label: 'Website Clicks', fmt: fmt }, ];
   return (
     <section className="kpi-strip">
       {kpis.map((k) => {
-        const slice = sliceSeries(profile.series[k.key], dates, range);
-        const total = sum(slice.values);
-        const half = Math.floor(slice.values.length / 2);
-        const recent = sum(slice.values.slice(half));
-        const prev = sum(slice.values.slice(0, half));
-        const d = delta(recent, prev);
+        const slice = sliceSeries(profile.series[k.key], dates, range); const total = sum(slice.values); const half = Math.floor(slice.values.length / 2);
+        const recent = sum(slice.values.slice(half)); const prev = sum(slice.values.slice(0, half)); const d = delta(recent, prev);
         return (
           <button key={k.key} className="kpi-card" onClick={() => onMetricClick(k.key)}>
-            <div className="kpi-top">
-              <span className="kpi-label">{k.label}</span>
-              <span className={`kpi-delta ${d >= 0 ? 'up' : 'down'}`}>{d >= 0 ? '+' : ''}{fmtPct(d, 1)}</span>
-            </div>
-            <div className="kpi-value">{k.fmt(total)}</div>
-            <div className="kpi-sub">total {k.sub || ''}</div>
-            <div className="kpi-spark"><Sparkline values={slice.values} accent={accent} height={32} /></div>
+            <div className="kpi-top"><span className="kpi-label">{k.label}</span><span className={`kpi-delta ${d >= 0 ? 'up' : 'down'}`}>{d >= 0 ? '+' : ''}{fmtPct(d, 1)}</span></div>
+            <div className="kpi-value">{k.fmt(total)}</div><div className="kpi-sub">total {k.sub || ''}</div><div className="kpi-spark"><Sparkline values={slice.values} accent={accent} height={32} /></div>
           </button>
         );
       })}
@@ -2326,59 +1860,25 @@ function KpiStrip({ profile, range, dates, accent, onMetricClick }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Growth chart — big featured chart with metric switcher
-// ─────────────────────────────────────────────────────────────────────────
 function GrowthPanel({ profile, range, dates, accent, chartStyle }) {
-  const [metric, setMetric] = React.useState('followers');
-  const metrics = [
-    { key: 'followers',      label: 'Followers' },
-    { key: 'reach',          label: 'Reach' },
-    { key: 'impressions',    label: 'Impressions' },
-    { key: 'engagement',     label: 'Engagement' },
-    { key: 'profile_views',  label: 'Profile Visits' },
-    { key: 'website_clicks', label: 'Website Clicks' },
-  ];
+  const [metric, setMetric] = React.useState('followers'); const metrics = [ { key: 'followers', label: 'Followers' }, { key: 'reach', label: 'Reach' }, { key: 'impressions', label: 'Impressions' }, { key: 'engagement', label: 'Engagement' }, { key: 'profile_views', label: 'Profile Visits' }, { key: 'website_clicks', label: 'Website Clicks' }, ];
   const slice = sliceSeries(profile.series[metric], dates, range);
-
   return (
     <section className="panel panel-growth">
-      <div className="panel-head">
-        <h2 className="panel-title">Growth</h2>
-        <div className="metric-switch">
-          {metrics.map(m => (
-            <button key={m.key} className={`ms-tab ${metric === m.key ? 'on' : ''}`} onClick={() => setMetric(m.key)}>{m.label}</button>
-          ))}
-        </div>
-      </div>
-      <div className="panel-body">
-        <LineChart values={slice.values} dates={slice.dates} accent={accent} style={chartStyle} height={300} />
-      </div>
+      <div className="panel-head"><h2 className="panel-title">Growth</h2><div className="metric-switch">{metrics.map(m => ( <button key={m.key} className={`ms-tab ${metric === m.key ? 'on' : ''}`} onClick={() => setMetric(m.key)}>{m.label}</button> ))}</div></div>
+      <div className="panel-body"><LineChart values={slice.values} dates={slice.dates} accent={accent} style={chartStyle} height={300} /></div>
     </section>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Reels Retention
-// ─────────────────────────────────────────────────────────────────────────
 function ReelsPanel({ profile, accent, data, chartStyle }) {
-  const curve = data.reelsRetention[profile.id];
-  const labels = curve.map((_, i) => `${i}s`);
-  const benchmark = 32; // avg drop-off industry
-  const finalRetention = curve[curve.length - 1];
-
+  const curve = data.reelsRetention[profile.id]; const labels = curve.map((_, i) => `${i}s`); const benchmark = 32; const finalRetention = curve[curve.length - 1];
   return (
     <section className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title">Reels Retention</h2>
-        <span className="panel-sub">Avg. % audience remaining · 30 s window</span>
-      </div>
+      <div className="panel-head"><h2 className="panel-title">Reels Retention</h2><span className="panel-sub">Avg. % audience remaining · 30 s window</span></div>
       <div className="panel-body">
         <div className="retention-stats">
-          <div className="rs-row"><span>3s hook</span><strong>{curve[3]}%</strong></div>
-          <div className="rs-row"><span>15s mid</span><strong>{curve[15]}%</strong></div>
-          <div className="rs-row"><span>30s end</span><strong>{finalRetention}%</strong></div>
-          <div className="rs-row"><span>vs. industry</span><strong className={finalRetention >= benchmark ? 'good' : 'warn'}>{finalRetention >= benchmark ? '+' : ''}{finalRetention - benchmark} pts</strong></div>
+          <div className="rs-row"><span>3s hook</span><strong>{curve[3]}%</strong></div><div className="rs-row"><span>15s mid</span><strong>{curve[15]}%</strong></div><div className="rs-row"><span>30s end</span><strong>{finalRetention}%</strong></div><div className="rs-row"><span>vs. industry</span><strong className={finalRetention >= benchmark ? 'good' : 'warn'}>{finalRetention >= benchmark ? '+' : ''}{finalRetention - benchmark} pts</strong></div>
         </div>
         <LineChart values={curve} dates={labels} accent={accent} style={chartStyle} height={180} formatValue={(v) => `${Math.round(v)}%`} />
       </div>
@@ -2386,26 +1886,14 @@ function ReelsPanel({ profile, accent, data, chartStyle }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Stories Completion
-// ─────────────────────────────────────────────────────────────────────────
 function StoriesPanel({ profile, accent, data, chartStyle }) {
-  const frames = data.storiesCompletion[profile.id];
-  const completion = (frames[frames.length - 1] / frames[0]) * 100;
-  const labels = frames.map((_, i) => `${i + 1}`);
-
+  const frames = data.storiesCompletion[profile.id]; const completion = (frames[frames.length - 1] / frames[0]) * 100; const labels = frames.map((_, i) => `${i + 1}`);
   return (
     <section className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title">Stories Completion</h2>
-        <span className="panel-sub">Avg. views per frame · 8-frame story</span>
-      </div>
+      <div className="panel-head"><h2 className="panel-title">Stories Completion</h2><span className="panel-sub">Avg. views per frame · 8-frame story</span></div>
       <div className="panel-body">
         <div className="retention-stats">
-          <div className="rs-row"><span>First frame</span><strong>{fmt(frames[0])}</strong></div>
-          <div className="rs-row"><span>Final frame</span><strong>{fmt(frames[frames.length - 1])}</strong></div>
-          <div className="rs-row"><span>Completion</span><strong>{completion.toFixed(1)}%</strong></div>
-          <div className="rs-row"><span>Drop-off</span><strong className="warn">−{(100 - completion).toFixed(1)}%</strong></div>
+          <div className="rs-row"><span>First frame</span><strong>{fmt(frames[0])}</strong></div><div className="rs-row"><span>Final frame</span><strong>{fmt(frames[frames.length - 1])}</strong></div><div className="rs-row"><span>Completion</span><strong>{completion.toFixed(1)}%</strong></div><div className="rs-row"><span>Drop-off</span><strong className="warn">−{(100 - completion).toFixed(1)}%</strong></div>
         </div>
         <LineChart values={frames} dates={labels} accent={accent} style="bar" height={180} formatValue={fmt} />
       </div>
@@ -2413,22 +1901,11 @@ function StoriesPanel({ profile, accent, data, chartStyle }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Demographics
-// ─────────────────────────────────────────────────────────────────────────
 function DemographicsPanel({ profile, accent, data }) {
-  const demo = data.demographics[profile.id];
-  const [tab, setTab] = React.useState('age');
+  const demo = data.demographics[profile.id]; const [tab, setTab] = React.useState('age');
   return (
     <section className="panel panel-demographics">
-      <div className="panel-head">
-        <h2 className="panel-title">Audience</h2>
-        <div className="seg-tabs">
-          {['age', 'gender', 'countries', 'cities'].map(t => (
-            <button key={t} className={`seg-tab ${tab === t ? 'on' : ''}`} onClick={() => setTab(t)}>{t}</button>
-          ))}
-        </div>
-      </div>
+      <div className="panel-head"><h2 className="panel-title">Audience</h2><div className="seg-tabs">{['age', 'gender', 'countries', 'cities'].map(t => ( <button key={t} className={`seg-tab ${tab === t ? 'on' : ''}`} onClick={() => setTab(t)}>{t}</button> ))}</div></div>
       <div className="panel-body">
         {tab === 'age' && <HBarList items={demo.age} accent={accent} max={50} />}
         {tab === 'gender' && <Donut items={demo.gender} accent={accent} />}
@@ -2439,73 +1916,32 @@ function DemographicsPanel({ profile, accent, data }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Best Time to Post
-// ─────────────────────────────────────────────────────────────────────────
 function BestTimePanel({ profile, accent, data, onExpand }) {
-  const grid = data.bestTime[profile.id];
-  // Find peak
-  let peak = { v: 0, d: 0, h: 0 };
-  grid.forEach((row, d) => row.forEach((v, h) => { if (v > peak.v) peak = { v, d, h }; }));
-  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
+  const grid = data.bestTime[profile.id]; let peak = { v: 0, d: 0, h: 0 }; grid.forEach((row, d) => row.forEach((v, h) => { if (v > peak.v) peak = { v, d, h }; })); const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   return (
     <section className="panel panel-besttime">
-      <div className="panel-head">
-        <h2 className="panel-title">Best Time to Post</h2>
-        <div className="panel-head-right">
-          <span className="panel-sub">Engagement index by hour (local · CET)</span>
-          <button className="icon-btn" onClick={onExpand} aria-label="Open detailed view" title="Open detailed view">
-            <svg width="14" height="14" viewBox="0 0 16 16"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
-          </button>
-        </div>
-      </div>
+      <div className="panel-head"><h2 className="panel-title">Best Time to Post</h2><div className="panel-head-right"><span className="panel-sub">Engagement index by hour (local · CET)</span><button className="icon-btn" onClick={onExpand} aria-label="Open detailed view" title="Open detailed view"><svg width="14" height="14" viewBox="0 0 16 16"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg></button></div></div>
       <div className="panel-body">
         <Heatmap grid={grid} accent={accent} />
-        <div className="bt-peak">
-          <span className="bt-peak-label">Peak window</span>
-          <span className="bt-peak-val">{days[peak.d]} · {peak.h.toString().padStart(2, '0')}:00 – {(peak.h + 1).toString().padStart(2, '0')}:00</span>
-          <button className="bt-expand" onClick={onExpand}>Detailed view ↗</button>
-        </div>
+        <div className="bt-peak"><span className="bt-peak-label">Peak window</span><span className="bt-peak-val">{days[peak.d]} · {peak.h.toString().padStart(2, '0')}:00 – {(peak.h + 1).toString().padStart(2, '0')}:00</span><button className="bt-expand" onClick={onExpand}>Detailed view ↗</button></div>
       </div>
     </section>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Hashtag performance
-// ─────────────────────────────────────────────────────────────────────────
 function HashtagsPanel({ profile, accent, data }) {
-  const rows = data.hashtags[profile.id];
-  const [sort, setSort] = React.useState('reach');
-  const sorted = [...rows].sort((a, b) => b[sort] - a[sort]);
+  const rows = data.hashtags[profile.id]; const [sort, setSort] = React.useState('reach'); const sorted = [...rows].sort((a, b) => b[sort] - a[sort]);
   return (
     <section className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title">Hashtags</h2>
-        <div className="seg-tabs">
-          {[['posts','Posts'],['reach','Reach'],['engagement','Engagement']].map(([k,l]) => (
-            <button key={k} className={`seg-tab ${sort === k ? 'on' : ''}`} onClick={() => setSort(k)}>{l}</button>
-          ))}
-        </div>
-      </div>
+      <div className="panel-head"><h2 className="panel-title">Hashtags</h2><div className="seg-tabs">{[['posts','Posts'],['reach','Reach'],['engagement','Engagement']].map(([k,l]) => ( <button key={k} className={`seg-tab ${sort === k ? 'on' : ''}`} onClick={() => setSort(k)}>{l}</button> ))}</div></div>
       <div className="panel-body">
         <table className="hashtag-table">
-          <thead>
-            <tr><th>Tag</th><th>Posts</th><th>Reach</th><th>Eng. rate</th></tr>
-          </thead>
+          <thead><tr><th>Tag</th><th>Posts</th><th>Reach</th><th>Eng. rate</th></tr></thead>
           <tbody>
             {sorted.map(r => (
               <tr key={r.tag}>
-                <td className="ht-tag">{r.tag}</td>
-                <td>{r.posts}</td>
-                <td>{fmt(r.reach)}</td>
-                <td>
-                  <span className="ht-bar">
-                    <span className="ht-bar-fill" style={{ width: `${(r.engagement / 10) * 100}%`, background: accent }} />
-                  </span>
-                  <span className="ht-rate">{r.engagement.toFixed(1)}%</span>
-                </td>
+                <td className="ht-tag">{r.tag}</td><td>{r.posts}</td><td>{fmt(r.reach)}</td>
+                <td><span className="ht-bar"><span className="ht-bar-fill" style={{ width: `${(r.engagement / 10) * 100}%`, background: accent }} /></span><span className="ht-rate">{r.engagement.toFixed(1)}%</span></td>
               </tr>
             ))}
           </tbody>
@@ -2515,21 +1951,11 @@ function HashtagsPanel({ profile, accent, data }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Top Posts grid with type filter
-// ─────────────────────────────────────────────────────────────────────────
+// ANGEPASST: Rendert nun die saubere Trennung von organisch und bezahlt, sowie Collab-Badges
 function TopPostsPanel({ profile, accent, data, onPostClick, range }) {
-  const all = data.posts[profile.id] || [];
-  const [filter, setFilter] = React.useState('all');
-  const [sort, setSort] = React.useState('reach');
-  // First: filter by date range (default to all dates if range missing)
-  const inRange = range && range.start && range.end
-    ? all.filter(p => p.date && p.date >= range.start && p.date <= range.end)
-    : all;
-  // Then: filter by type
-  const filtered = filter === 'all' ? inRange : inRange.filter(p => p.type === filter);
-  // Sort by chosen metric and cap at 24 for layout
-  const sorted = [...filtered].sort((a, b) => b[sort] - a[sort]).slice(0, 24);
+  const all = data.posts[profile.id] || []; const [filter, setFilter] = React.useState('all'); const [sort, setSort] = React.useState('reach');
+  const inRange = range && range.start && range.end ? all.filter(p => p.date && p.date >= range.start && p.date <= range.end) : all;
+  const filtered = filter === 'all' ? inRange : inRange.filter(p => p.type === filter); const sorted = [...filtered].sort((a, b) => b[sort] - a[sort]).slice(0, 24);
 
   const TypeIcon = ({ type }) => {
     if (type === 'reel') return <svg width="12" height="12" viewBox="0 0 16 16"><path d="M3 3h10v10H3z" fill="none" stroke="currentColor" strokeWidth="1.3"/><path d="M7 6l4 2-4 2z" fill="currentColor"/></svg>;
@@ -2542,21 +1968,8 @@ function TopPostsPanel({ profile, accent, data, onPostClick, range }) {
       <div className="panel-head">
         <h2 className="panel-title">Top Posts <span className="panel-count" style={{ fontSize: '11px', color: 'var(--ink-3, #888)', fontWeight: 400, marginLeft: '8px' }}>{filtered.length} im Zeitraum</span></h2>
         <div className="post-controls">
-          <div className="filter-chips">
-            {[['all','All'],['image','Image'],['reel','Reel'],['carousel','Carousel']].map(([k,l]) => (
-              <button key={k} className={`chip ${filter === k ? 'on' : ''}`} onClick={() => setFilter(k)}>{l}</button>
-            ))}
-          </div>
-          <div className="sort-by">
-            <span>Sort by</span>
-            <select value={sort} onChange={(e) => setSort(e.target.value)}>
-              <option value="reach">Reach</option>
-              <option value="likes">Likes</option>
-              <option value="comments">Comments</option>
-              <option value="saves">Saves</option>
-              <option value="shares">Shares</option>
-            </select>
-          </div>
+          <div className="filter-chips">{[['all','All'],['image','Image'],['reel','Reel'],['carousel','Carousel']].map(([k,l]) => ( <button key={k} className={`chip ${filter === k ? 'on' : ''}`} onClick={() => setFilter(k)}>{l}</button> ))}</div>
+          <div className="sort-by"><span>Sort by</span><select value={sort} onChange={(e) => setSort(e.target.value)}><option value="reach">Reach</option><option value="likes">Likes</option><option value="comments">Comments</option><option value="saves">Saves</option><option value="shares">Shares</option></select></div>
         </div>
       </div>
       <div className="panel-body">
@@ -2564,31 +1977,34 @@ function TopPostsPanel({ profile, accent, data, onPostClick, range }) {
           {sorted.map((p, i) => (
             <div key={p.id} className="post-card">
               <button className="post-card-main" onClick={() => onPostClick(p)}>
-                <div className={`pc-media ${p.thumbnail ? 'has-image' : ''}`} style={p.thumbnail
-                  ? { backgroundImage: `url(${p.thumbnail})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: p.swatch }
-                  : { background: p.swatch }}>
-                  <span className="pc-rank">{String(i + 1).padStart(2, '0')}</span>
-                  <span className="pc-type"><TypeIcon type={p.type} /> {p.type}</span>
+                <div className={`pc-media ${p.thumbnail ? 'has-image' : ''}`} style={p.thumbnail ? { backgroundImage: `url(${p.thumbnail})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: p.swatch } : { background: p.swatch }}>
+                  <span className="pc-rank">{String(i + 1).padStart(2, '0')}</span><span className="pc-type"><TypeIcon type={p.type} /> {p.type}</span>
                   {p.type === 'reel' && <span className="pc-duration">{p.duration}s</span>}
-                  {p.type === 'carousel' && <span className="pc-duration">{p.slides} slides</span>}
                 </div>
                 <div className="pc-body">
-                  <div className="pc-date">{fmtDate(p.date)}</div>
-                  <div className="pc-title">{p.title}</div>
+                  <div className="pc-date">{fmtDate(p.date)}</div><div className="pc-title">{p.title}</div>
                   <div className="pc-stats">
-                    <span><em>Reach</em> {fmt(p.reach)}</span>
-                    <span><em>Likes</em> {fmt(p.likes)}</span>
+                    <span><em>Org. Impr</em> {fmt(p.ads.organic_impressions_clean)}</span>
+                    {p.ads.has_active_ads ? (
+                      <span style={{ color: 'var(--accent-2)', fontWeight: 'bold' }}><em>Paid Impr</em> {fmt(p.ads.paid_impressions)}</span>
+                    ) : (
+                      <span><em>Likes</em> {fmt(p.likes)}</span>
+                    )}
                     <span><em>Comm.</em> {fmt(p.comments)}</span>
-                    <span><em>Saves</em> {fmt(p.saves)}</span>
+                    {p.ads.has_active_ads ? (
+                      <span style={{ color: 'var(--good)', fontWeight: 'bold' }}><em>Budget</em> €{p.ads.spend_eur.toFixed(2)}</span>
+                    ) : (
+                      <span><em>Saves</em> {fmt(p.saves)}</span>
+                    )}
                   </div>
+                  {p.ads.is_collab && (
+                    <div style={{ marginTop: '8px', fontFamily: 'var(--mono)', fontSize: '9.5px', color: 'var(--warn)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      🤝 Collab: {p.ads.collab_partner_username}
+                    </div>
+                  )}
                 </div>
               </button>
-              {p.url && (
-                <a className="pc-ig" href={p.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title="View on Instagram">
-                  <svg width="12" height="12" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="3" fill="none" stroke="currentColor" strokeWidth="1.3"/><circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.3"/><circle cx="11.5" cy="4.5" r="0.7" fill="currentColor"/></svg>
-                  <span>View</span>
-                </a>
-              )}
+              {p.url && ( <a className="pc-ig" href={p.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title="View on Instagram"><svg width="12" height="12" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="3" fill="none" stroke="currentColor" strokeWidth="1.3"/><circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.3"/><circle cx="11.5" cy="4.5" r="0.7" fill="currentColor"/></svg><span>View</span></a> )}
             </div>
           ))}
         </div>
@@ -2597,63 +2013,23 @@ function TopPostsPanel({ profile, accent, data, onPostClick, range }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Modal — drill-in for metric or post
-// ─────────────────────────────────────────────────────────────────────────
 function Modal({ open, onClose, children, wide }) {
-  React.useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    if (open) document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-  if (!open) return null;
-  return (
-    <div className="modal-scrim" onClick={onClose}>
-      <div className={`modal ${wide ? 'wide' : ''}`} onClick={(e) => e.stopPropagation()}>
-        <button className="modal-close" onClick={onClose} aria-label="Close">✕</button>
-        {children}
-      </div>
-    </div>
-  );
+  React.useEffect(() => { const onKey = (e) => { if (e.key === 'Escape') onClose(); }; if (open) document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey); }, [open, onClose]); if (!open) return null;
+  return ( <div className="modal-scrim" onClick={onClose}><div className={`modal ${wide ? 'wide' : ''}`} onClick={(e) => e.stopPropagation()}><button className="modal-close" onClick={onClose} aria-label="Close">✕</button>{children}</div></div> );
 }
 
 function MetricDrill({ metric, profile, profiles, range, dates, accent, accent2 }) {
-  const labels = {
-    followers:      { title: 'Followers',       sub: 'Total community size over time', unit: '' },
-    reach:          { title: 'Reach',           sub: 'Unique accounts that saw your content', unit: '' },
-    impressions:    { title: 'Impressions',     sub: 'Total times content was rendered', unit: '' },
-    engagement:     { title: 'Engagement',      sub: 'Likes, comments, saves, shares combined', unit: '' },
-    profile_views:  { title: 'Profile Visits',  sub: 'Visits to the profile page', unit: '' },
-    website_clicks: { title: 'Website Clicks',  sub: 'Taps on the website link in bio', unit: '' },
-  };
-  const meta = labels[metric];
-  const slice = sliceSeries(profile.series[metric], dates, range);
-  const total = sum(slice.values);
-  const avg = total / slice.values.length;
-  const max = Math.max(...slice.values);
-  const maxDate = slice.dates[slice.values.indexOf(max)];
-
-  // Compare with other profile
-  const other = Object.values(profiles).find(p => p.id !== profile.id);
-  const otherSlice = sliceSeries(other.series[metric], dates, range);
-  const otherTotal = sum(otherSlice.values);
+  const labels = { followers: { title: 'Followers', sub: 'Total community size over time', unit: '' }, reach: { title: 'Reach', sub: 'Unique accounts that saw your content', unit: '' }, impressions: { title: 'Impressions', sub: 'Total times content was rendered', unit: '' }, engagement: { title: 'Engagement', sub: 'Likes, comments, saves, shares combined', unit: '' }, profile_views: { title: 'Profile Visits', sub: 'Visits to the profile page', unit: '' }, website_clicks: { title: 'Website Clicks', sub: 'Taps on the website link in bio', unit: '' }, };
+  const meta = labels[metric]; const slice = sliceSeries(profile.series[metric], dates, range); const total = sum(slice.values); const avg = total / slice.values.length; const max = Math.max(...slice.values); const maxDate = slice.dates[slice.values.indexOf(max)];
+  const other = Object.values(profiles).find(p => p.id !== profile.id); const otherSlice = sliceSeries(other.series[metric], dates, range); const otherTotal = sum(otherSlice.values);
 
   return (
     <div className="drill">
-      <div className="drill-head">
-        <span className="drill-eyebrow">{profile.handle} · metric</span>
-        <h2 className="drill-title">{meta.title}</h2>
-        <p className="drill-sub">{meta.sub}</p>
-      </div>
+      <div className="drill-head"><span className="drill-eyebrow">{profile.handle} · metric</span><h2 className="drill-title">{meta.title}</h2><p className="drill-sub">{meta.sub}</p></div>
       <div className="drill-stats">
-        <div><span className="ds-l">Total</span><span className="ds-v">{fmt(total)}</span></div>
-        <div><span className="ds-l">Daily avg.</span><span className="ds-v">{fmt(Math.round(avg))}</span></div>
-        <div><span className="ds-l">Peak day</span><span className="ds-v">{fmt(max)} <em>· {fmtDateShort(maxDate)}</em></span></div>
-        <div><span className="ds-l">{other.handle.replace('@','')}</span><span className="ds-v">{fmt(otherTotal)}</span></div>
+        <div><span className="ds-l">Total</span><span className="ds-v">{fmt(total)}</span></div><div><span className="ds-l">Daily avg.</span><span className="ds-v">{fmt(Math.round(avg))}</span></div><div><span className="ds-l">Peak day</span><span className="ds-v">{fmt(max)} <em>· {fmtDateShort(maxDate)}</em></span></div><div><span className="ds-l">{other.handle.replace('@','')}</span><span className="ds-v">{fmt(otherTotal)}</span></div>
       </div>
-      <div className="drill-chart">
-        <LineChart values={slice.values} dates={slice.dates} accent={accent} style="area" height={280} />
-      </div>
+      <div className="drill-chart"><LineChart values={slice.values} dates={slice.dates} accent={accent} style="area" height={280} /></div>
       <div className="drill-foot">
         <span className="df-l">Compare</span>
         <div className="df-cmp">
@@ -2665,120 +2041,64 @@ function MetricDrill({ metric, profile, profiles, range, dates, accent, accent2 
   );
 }
 
+// ANGEPASST: Zeigt nun Spend, ROI und Collab Partner im Modal-Deep-Dive an
 function PostDrill({ post, profile, accent }) {
-  const engagement = post.likes + post.comments + post.saves + post.shares;
-  const rate = (engagement / post.reach) * 100;
-  // Mock minute-by-minute reach curve for the post
-  const curve = [];
-  for (let i = 0; i < 48; i++) {
-    const t = i / 47;
-    const v = post.reach * (1 - Math.exp(-t * 3.4)) * (1 + Math.sin(t * 7) * 0.04);
-    curve.push(Math.round(v));
-  }
+  const engagement = post.likes + post.comments + post.saves + post.shares; const rate = (engagement / post.reach) * 100; const curve = [];
+  for (let i = 0; i < 48; i++) { const t = i / 47; curve.push(Math.round(post.reach * (1 - Math.exp(-t * 3.4)) * (1 + Math.sin(t * 7) * 0.04))); }
   const hourLabels = curve.map((_, i) => `${i}h`);
 
   return (
     <div className="drill">
       <div className="post-drill-head">
-        <div className={`pdh-media ${post.thumbnail ? 'has-image' : ''}`} style={post.thumbnail
-          ? { backgroundImage: `url(${post.thumbnail})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: post.swatch }
-          : { background: post.swatch }}>
+        <div className={`pdh-media ${post.thumbnail ? 'has-image' : ''}`} style={post.thumbnail ? { backgroundImage: `url(${post.thumbnail})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: post.swatch } : { background: post.swatch }}>
           <span className="pc-type"><span style={{ textTransform: 'capitalize' }}>{post.type}</span></span>
-          {post.type === 'reel' && <span className="pc-duration">{post.duration}s</span>}
-          {post.type === 'carousel' && <span className="pc-duration">{post.slides} slides</span>}
         </div>
         <div className="pdh-text">
-          <span className="drill-eyebrow">{profile.handle} · {fmtDate(post.date)}</span>
-          <h2 className="drill-title">{post.title}</h2>
+          <span className="drill-eyebrow">{profile.handle} · {fmtDate(post.date)}</span><h2 className="drill-title">{post.title}</h2>
           <div className="pdh-stats">
-            <div><em>Reach</em><strong>{fmt(post.reach)}</strong></div>
+            <div><em>Total Reach</em><strong>{fmt(post.reach)}</strong></div>
+            <div><em>Clean Org. Impr</em><strong>{fmt(post.ads.organic_impressions_clean)}</strong></div>
+            <div><em>Paid Impressions</em><strong style={post.ads.has_active_ads ? {color: 'var(--accent-2)'} : {}}>{fmt(post.ads.paid_impressions)}</strong></div>
+            <div><em>Ad Spend</em><strong style={post.ads.has_active_ads ? {color: 'var(--good)'} : {}}>€{post.ads.spend_eur.toFixed(2)}</strong></div>
+            <div><em>ROI Link Clicks</em><strong>{fmt(post.ads.roi_link_clicks)}</strong></div>
             <div><em>Likes</em><strong>{fmt(post.likes)}</strong></div>
             <div><em>Comments</em><strong>{fmt(post.comments)}</strong></div>
-            <div><em>Saves</em><strong>{fmt(post.saves)}</strong></div>
-            <div><em>Shares</em><strong>{fmt(post.shares)}</strong></div>
-            {post.plays && <div><em>Plays</em><strong>{fmt(post.plays)}</strong></div>}
             <div><em>Engagement rate</em><strong>{rate.toFixed(2)}%</strong></div>
           </div>
-          {post.url && (
-            <a className="ig-link" href={post.url} target="_blank" rel="noopener noreferrer">
-              <svg width="14" height="14" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="3" fill="none" stroke="currentColor" strokeWidth="1.3"/><circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.3"/><circle cx="11.5" cy="4.5" r="0.7" fill="currentColor"/></svg>
-              Open on Instagram
-              <span className="ig-link-url">{post.url.replace('https://www.instagram.com', '')}</span>
-            </a>
+          {post.ads.is_collab && (
+            <div style={{ marginTop: '12px', padding: '8px 12px', background: 'var(--panel-2)', borderLeft: '3px solid var(--warn)', fontFamily: 'var(--mono)', fontSize: '12px' }}>
+              🤝 <strong>Collab Partner:</strong> {post.ads.collab_partner_username}
+            </div>
           )}
+          {post.url && ( <a className="ig-link" href={post.url} target="_blank" rel="noopener noreferrer"><svg width="14" height="14" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="3" fill="none" stroke="currentColor" strokeWidth="1.3"/><circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.3"/><circle cx="11.5" cy="4.5" r="0.7" fill="currentColor"/></svg>Open on Instagram<span className="ig-link-url">{post.url.replace('https://www.instagram.com', '')}</span></a> )}
         </div>
       </div>
-      <div className="drill-chart">
-        <div className="drill-chart-title">Reach over the first 48 hours</div>
-        <LineChart values={curve} dates={hourLabels} accent={accent} style="area" height={200} />
-      </div>
+      <div className="drill-chart"><div className="drill-chart-title">Reach over the first 48 hours</div><LineChart values={curve} dates={hourLabels} accent={accent} style="area" height={200} /></div>
     </div>
   );
 }
 
-// ────────────────────────────────────────────────────────────────────────
-// Best Time drill — zoomed heatmap with numeric cells + top windows
-// ────────────────────────────────────────────────────────────────────────
 function BestTimeDrill({ profile, accent, accent2, data }) {
-  const grid = data.bestTime[profile.id];
-  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  const dayFull = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const max = Math.max(...grid.flat());
-  const [hover, setHover] = React.useState(null);
-  const [showValues, setShowValues] = React.useState(true);
-
-  // Top 5 windows
-  const flat = [];
-  grid.forEach((row, d) => row.forEach((v, h) => flat.push({ d, h, v })));
-  flat.sort((a, b) => b.v - a.v);
-  const topFive = flat.slice(0, 5);
-
-  // Aggregates
+  const grid = data.bestTime[profile.id]; const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']; const dayFull = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const max = Math.max(...grid.flat()); const [hover, setHover] = React.useState(null); const [showValues, setShowValues] = React.useState(true);
+  const flat = []; grid.forEach((row, d) => row.forEach((v, h) => flat.push({ d, h, v }))); flat.sort((a, b) => b.v - a.v); const topFive = flat.slice(0, 5);
   const byDay = grid.map((row, d) => ({ d, total: row.reduce((s, v) => s + v, 0), avg: row.reduce((s, v) => s + v, 0) / 24 }));
   const byHour = Array.from({ length: 24 }, (_, h) => ({ h, total: grid.reduce((s, row) => s + row[h], 0), avg: grid.reduce((s, row) => s + row[h], 0) / 7 }));
-  const maxDay = Math.max(...byDay.map(d => d.avg));
-  const maxHour = Math.max(...byHour.map(h => h.avg));
+  const maxDay = Math.max(...byDay.map(d => d.avg)); const maxHour = Math.max(...byHour.map(h => h.avg));
 
   return (
     <div className="drill bt-drill">
-      <div className="drill-head">
-        <span className="drill-eyebrow">{profile.handle} · best time to post</span>
-        <h2 className="drill-title">When to publish</h2>
-        <p className="drill-sub">Engagement index normalized 0–100 by weekday × hour, local CET. Higher values = better historical performance.</p>
-      </div>
-
-      <div className="bt-drill-controls">
-        <button className={`chip ${showValues ? 'on' : ''}`} onClick={() => setShowValues(v => !v)}>
-          {showValues ? 'Hide values' : 'Show values'}
-        </button>
-        <div className="bt-legend">
-          <span className="bt-legend-l">Low</span>
-          <span className="bt-legend-grad" style={{ background: `linear-gradient(to right, ${accent}11, ${accent})` }} />
-          <span className="bt-legend-l">High</span>
-        </div>
-      </div>
-
+      <div className="drill-head"><span className="drill-eyebrow">{profile.handle} · best time to post</span><h2 className="drill-title">When to publish</h2><p className="drill-sub">Engagement index normalized 0–100 by weekday × hour, local CET.</p></div>
+      <div className="bt-drill-controls"><button className={`chip ${showValues ? 'on' : ''}`} onClick={() => setShowValues(v => !v)}>{showValues ? 'Hide values' : 'Show values'}</button><div className="bt-legend"><span className="bt-legend-l">Low</span><span className="bt-legend-grad" style={{ background: `linear-gradient(to right, ${accent}11, ${accent})` }} /><span className="bt-legend-l">High</span></div></div>
       <div className="bt-zoom" onMouseLeave={() => setHover(null)}>
-        <div className="btz-hours">
-          <span className="btz-corner" />
-          {Array.from({ length: 24 }, (_, h) => (
-            <span key={h} className={`btz-h-l ${hover && hover.h === h ? 'on' : ''}`}>{h.toString().padStart(2, '0')}</span>
-          ))}
-        </div>
+        <div className="btz-hours"><span className="btz-corner" />{Array.from({ length: 24 }, (_, h) => ( <span key={h} className={`btz-h-l ${hover && hover.h === h ? 'on' : ''}`}>{h.toString().padStart(2, '0')}</span> ))}</div>
         {grid.map((row, d) => (
           <div key={d} className="btz-row">
             <span className={`btz-day ${hover && hover.d === d ? 'on' : ''}`}>{days[d]}</span>
             {row.map((v, h) => {
-              const op = 0.06 + (v / max) * 0.94;
-              const isHover = hover && hover.d === d && hover.h === h;
-              const isTop = topFive.find(t => t.d === d && t.h === h);
+              const op = 0.06 + (v / max) * 0.94; const isHover = hover && hover.d === d && hover.h === h; const isTop = topFive.find(t => t.d === d && t.h === h);
               return (
-                <button
-                  key={h}
-                  className={`btz-cell ${isHover ? 'on' : ''} ${isTop ? 'top' : ''}`}
-                  style={{ background: accent, opacity: op }}
-                  onMouseEnter={() => setHover({ d, h, v })}
-                >
+                <button key={h} className={`btz-cell ${isHover ? 'on' : ''} ${isTop ? 'top' : ''}`} style={{ background: accent, opacity: op }} onMouseEnter={() => setHover({ d, h, v })}>
                   {showValues && <span className="btz-val" style={{ color: op > 0.55 ? 'white' : 'currentColor' }}>{v}</span>}
                   {isTop && <span className="btz-top-mark" style={{ background: accent2 }}>{topFive.findIndex(t => t.d === d && t.h === h) + 1}</span>}
                 </button>
@@ -2787,220 +2107,70 @@ function BestTimeDrill({ profile, accent, accent2, data }) {
           </div>
         ))}
       </div>
-
       <div className="bt-readout-bar">
-        {hover ? (
-          <>
-            <div><span className="ds-l">Day</span><span className="ds-v">{dayFull[hover.d]}</span></div>
-            <div><span className="ds-l">Hour</span><span className="ds-v">{hover.h.toString().padStart(2, '0')}:00 – {(hover.h + 1).toString().padStart(2, '0')}:00</span></div>
-            <div><span className="ds-l">Index</span><span className="ds-v" style={{ color: accent }}>{hover.v}</span></div>
-            <div><span className="ds-l">vs. avg</span><span className="ds-v">{((hover.v / (max / 2)) * 100 - 100).toFixed(0)}%</span></div>
-          </>
-        ) : (
-          <div className="bt-readout-hint">Hover any cell to inspect — ranked windows are marked in blue.</div>
-        )}
+        {hover ? ( <><div className="day"><span>Day</span><span className="ds-v">{dayFull[hover.d]}</span></div><div><span>Hour</span><span className="ds-v">{hover.h.toString().padStart(2, '0')}:00</span></div><div><span>Index</span><span className="ds-v" style={{ color: accent }}>{hover.v}</span></div><div><span>vs. avg</span><span className="ds-v">{((hover.v / (max / 2)) * 100 - 100).toFixed(0)}%</span></div></> ) : ( <div className="bt-readout-hint">Hover any cell to inspect — ranked windows are marked in blue.</div> )}
       </div>
-
       <div className="bt-grid-2">
-        <div className="bt-side">
-          <h3 className="bt-side-title">Top 5 windows</h3>
-          <ol className="bt-top-list">
-            {topFive.map((t, i) => (
-              <li key={i}>
-                <span className="bt-top-rank" style={{ background: accent2 }}>{i + 1}</span>
-                <span className="bt-top-when">{dayFull[t.d]} · {t.h.toString().padStart(2, '0')}:00</span>
-                <span className="bt-top-val">{t.v}</span>
-              </li>
-            ))}
-          </ol>
-        </div>
-        <div className="bt-side">
-          <h3 className="bt-side-title">By weekday</h3>
-          <ul className="bt-bars">
-            {byDay.map((d, i) => (
-              <li key={i}>
-                <span className="bt-bar-l">{dayFull[d.d]}</span>
-                <span className="bt-bar-track"><span className="bt-bar-fill" style={{ width: `${(d.avg / maxDay) * 100}%`, background: accent }} /></span>
-                <span className="bt-bar-v">{Math.round(d.avg)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div className="bt-side">
-          <h3 className="bt-side-title">By hour</h3>
-          <div className="bt-hour-row">
-            {byHour.map((h, i) => (
-              <div key={i} className="bt-hour-col" title={`${h.h.toString().padStart(2,'0')}:00 · avg ${Math.round(h.avg)}`}>
-                <span className="bt-hour-bar" style={{ height: `${(h.avg / maxHour) * 100}%`, background: accent }} />
-                {(i % 3 === 0) && <span className="bt-hour-l">{h.h.toString().padStart(2,'0')}</span>}
-              </div>
-            ))}
-          </div>
-        </div>
+        <div className="bt-side"><h3 className="bt-side-title">Top 5 windows</h3><ol className="bt-top-list">{topFive.map((t, i) => ( <li key={i}><span className="bt-top-rank" style={{ background: accent2 }}>{i + 1}</span><span className="bt-top-when">{dayFull[t.d]} · {t.h.toString().padStart(2, '0')}:00</span><span className="bt-top-val">{t.v}</span></li> ))}</ol></div>
+        <div className="bt-side"><h3 className="bt-side-title">By weekday</h3><ul className="bt-bars">{byDay.map((d, i) => ( <li key={i}><span className="bt-bar-l">{dayFull[d.d]}</span><span className="bt-bar-track"><span className="bt-bar-fill" style={{ width: `${(d.avg / maxDay) * 100}%`, background: accent }} /></span><span className="bt-bar-v">{Math.round(d.avg)}</span></li> ))}</ul></div>
+        <div className="bt-side"><h3 className="bt-side-title">By hour</h3><div className="bt-hour-row">{byHour.map((h, i) => ( <div key={i} className="bt-hour-col" title={`${h.h.toString().padStart(2,'0')}:00 · avg ${Math.round(h.avg)}`}><span className="bt-hour-bar" style={{ height: `${(h.avg / maxHour) * 100}%`, background: accent }} />{(i % 3 === 0) && <span className="bt-hour-l">{h.h.toString().padStart(2,'0')}</span>}</div> ))}</div></div>
       </div>
     </div>
   );
 }
 
-Object.assign(window, {
-  Hero, KpiStrip, GrowthPanel, ReelsPanel, StoriesPanel,
-  DemographicsPanel, BestTimePanel, HashtagsPanel, TopPostsPanel,
-  Modal, MetricDrill, PostDrill, BestTimeDrill,
-});
-
+Object.assign(window, { Hero, KpiStrip, GrowthPanel, ReelsPanel, StoriesPanel, DemographicsPanel, BestTimePanel, HashtagsPanel, TopPostsPanel, Modal, MetricDrill, PostDrill, BestTimeDrill, });
 </script>
 
 <script type="text/babel" data-presets="react">
 function App() {
-  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
-  const D = window.DASHBOARD_DATA;
-
-  const [profileId, setProfileId] = React.useState('main');
-  const [range, setRange] = React.useState({ start: '2026-04-20', end: '2026-05-18' });
-  const [refreshing, setRefreshing] = React.useState(false);
-  const [drill, setDrill] = React.useState(null);
-
+  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS); const D = window.DASHBOARD_DATA;
+  const [profileId, setProfileId] = React.useState('main'); const [range, setRange] = React.useState({ start: '2026-04-20', end: '2026-05-18' });
+  const [refreshing, setRefreshing] = React.useState(false); const [drill, setDrill] = React.useState(null);
   const profile = D.profiles[profileId];
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    setTimeout(() => setRefreshing(false), 1100);
-  };
+  const onRefresh = () => { setRefreshing(true); setTimeout(() => setRefreshing(false), 1100); };
 
-  // Apply tweaks to root
   React.useEffect(() => {
-    document.documentElement.style.setProperty('--accent', t.accent);
-    document.documentElement.style.setProperty('--accent-2', t.accent2);
-    document.documentElement.dataset.theme = t.dark ? 'dark' : 'light';
-    document.documentElement.dataset.density = t.density;
+    document.documentElement.style.setProperty('--accent', t.accent); document.documentElement.style.setProperty('--accent-2', t.accent2);
+    document.documentElement.dataset.theme = t.dark ? 'dark' : 'light'; document.documentElement.dataset.density = t.density;
   }, [t.accent, t.accent2, t.dark, t.density]);
 
   return (
     <div className="dashboard">
-      <Header
-        profile={profile}
-        profiles={D.profiles}
-        onProfileChange={setProfileId}
-        range={range}
-        onRangeChange={setRange}
-        onRefresh={onRefresh}
-        refreshing={refreshing}
-      />
-
+      <Header profile={profile} profiles={D.profiles} onProfileChange={setProfileId} range={range} onRangeChange={setRange} onRefresh={onRefresh} refreshing={refreshing} />
       <main className="dash-main">
-        <Hero
-          profile={profile}
-          range={range}
-          dates={D.dates}
-          accent={t.accent}
-          onMetricClick={(m) => setDrill({ kind: 'metric', metric: m })}
-          chartStyle={t.chartStyle}
-        />
-
-        <KpiStrip
-          profile={profile}
-          range={range}
-          dates={D.dates}
-          accent={t.accent}
-          onMetricClick={(m) => setDrill({ kind: 'metric', metric: m })}
-        />
-
-        <GrowthPanel
-          profile={profile}
-          range={range}
-          dates={D.dates}
-          accent={t.accent}
-          chartStyle={t.chartStyle}
-        />
-
-        <div className="grid-2">
-          <ReelsPanel profile={profile} accent={t.accent} data={D} chartStyle={t.chartStyle} />
-          <StoriesPanel profile={profile} accent={t.accent} data={D} chartStyle={t.chartStyle} />
-        </div>
-
-        <div className="grid-2">
-          <DemographicsPanel profile={profile} accent={t.accent} data={D} />
-          <BestTimePanel profile={profile} accent={t.accent} data={D} onExpand={() => setDrill({ kind: 'besttime' })} />
-        </div>
-
-        <TopPostsPanel
-          profile={profile}
-          accent={t.accent}
-          data={D}
-          range={range}
-          onPostClick={(p) => setDrill({ kind: 'post', post: p })}
-        />
-
+        <Hero profile={profile} range={range} dates={D.dates} accent={t.accent} onMetricClick={(m) => setDrill({ kind: 'metric', metric: m })} chartStyle={t.chartStyle} />
+        <KpiStrip profile={profile} range={range} dates={D.dates} accent={t.accent} onMetricClick={(m) => setDrill({ kind: 'metric', metric: m })} />
+        <GrowthPanel profile={profile} range={range} dates={D.dates} accent={t.accent} chartStyle={t.chartStyle} />
+        <div className="grid-2"><ReelsPanel profile={profile} accent={t.accent} data={D} chartStyle={t.chartStyle} /><StoriesPanel profile={profile} accent={t.accent} data={D} chartStyle={t.chartStyle} /></div>
+        <div className="grid-2"><DemographicsPanel profile={profile} accent={t.accent} data={D} /><BestTimePanel profile={profile} accent={t.accent} data={D} onExpand={() => setDrill({ kind: 'besttime' })} /></div>
+        <TopPostsPanel profile={profile} accent={t.accent} data={D} range={range} onPostClick={(p) => setDrill({ kind: 'post', post: p })} />
         <footer className="dash-foot">
           <div className="foot-rule" />
-          <div className="foot-inner">
-            <span className="foot-l">Contemporary And (C&amp;) · Instagram Analytics</span>
-            <span className="foot-r">Data: Instagram Graph API · Last sync 18 May 2026, 09:42 CET</span>
-          </div>
+          <div className="foot-inner"><span className="foot-l">Contemporary And (C&amp;) · Instagram Analytics</span><span className="foot-r">Data: Instagram Graph API · Last sync 18 May 2026, 09:42 CET</span></div>
         </footer>
       </main>
 
-      <Modal open={drill?.kind === 'metric'} onClose={() => setDrill(null)} wide>
-        {drill?.kind === 'metric' && (
-          <MetricDrill
-            metric={drill.metric}
-            profile={profile}
-            profiles={D.profiles}
-            range={range}
-            dates={D.dates}
-            accent={t.accent}
-            accent2={t.accent2}
-          />
-        )}
-      </Modal>
-      <Modal open={drill?.kind === 'post'} onClose={() => setDrill(null)} wide>
-        {drill?.kind === 'post' && (
-          <PostDrill post={drill.post} profile={profile} accent={t.accent} />
-        )}
-      </Modal>
-      <Modal open={drill?.kind === 'besttime'} onClose={() => setDrill(null)} wide>
-        {drill?.kind === 'besttime' && (
-          <BestTimeDrill profile={profile} accent={t.accent} accent2={t.accent2} data={D} />
-        )}
-      </Modal>
+      <Modal open={drill?.kind === 'metric'} onClose={() => setDrill(null)} wide>{drill?.kind === 'metric' && ( <MetricDrill metric={drill.metric} profile={profile} profiles={D.profiles} range={range} dates={D.dates} accent={t.accent} accent2={t.accent2} /> )}</Modal>
+      <Modal open={drill?.kind === 'post'} onClose={() => setDrill(null)} wide>{drill?.kind === 'post' && ( <PostDrill post={drill.post} profile={profile} accent={t.accent} /> )}</Modal>
+      <Modal open={drill?.kind === 'besttime'} onClose={() => setDrill(null)} wide>{drill?.kind === 'besttime' && ( <BestTimeDrill profile={profile} accent={t.accent} accent2={t.accent2} data={D} /> )}</Modal>
 
       <TweaksPanel>
-        <TweakSection label="Theme" />
-        <TweakToggle label="Dark mode" value={t.dark} onChange={(v) => setTweak('dark', v)} />
-        <TweakColor label="Accent" value={t.accent}
-          options={['#000000', '#D4502E', '#1F4FD9', '#1F8A5B', '#B58A2C', '#7A5AE0']}
-          onChange={(v) => setTweak('accent', v)} />
-        <TweakColor label="Secondary" value={t.accent2}
-          options={['#1F4FD9', '#2A6FDB', '#1F8A5B', '#D4502E', '#7A5AE0', '#B58A2C']}
-          onChange={(v) => setTweak('accent2', v)} />
-
-        <TweakSection label="Layout" />
-        <TweakRadio label="Density" value={t.density}
-          options={['compact', 'regular', 'comfy']}
-          onChange={(v) => setTweak('density', v)} />
-        <TweakRadio label="Chart" value={t.chartStyle}
-          options={['line', 'area', 'bar']}
-          onChange={(v) => setTweak('chartStyle', v)} />
+        <TweakSection label="Theme" /><TweakToggle label="Dark mode" value={t.dark} onChange={(v) => setTweak('dark', v)} />
+        <TweakColor label="Accent" value={t.accent} options={['#000000', '#D4502E', '#1F4FD9', '#1F8A5B', '#B58A2C', '#7A5AE0']} onChange={(v) => setTweak('accent', v)} />
+        <TweakColor label="Secondary" value={t.accent2} options={['#1F4FD9', '#2A6FDB', '#1F8A5B', '#D4502E', '#7A5AE0', '#B58A2C']} onChange={(v) => setTweak('accent2', v)} />
+        <TweakSection label="Layout" /><TweakRadio label="Density" value={t.density} options={['compact', 'regular', 'comfy']} onChange={(v) => setTweak('density', v)} />
+        <TweakRadio label="Chart" value={t.chartStyle} options={['line', 'area', 'bar']} onChange={(v) => setTweak('chartStyle', v)} />
       </TweaksPanel>
     </div>
   );
 }
 
-const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
-  "accent": "#000000",
-  "accent2": "#1F4FD9",
-  "dark": false,
-  "density": "regular",
-  "chartStyle": "area"
-}/*EDITMODE-END*/;
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{ "accent": "#000000", "accent2": "#1F4FD9", "dark": false, "density": "regular", "chartStyle": "area" }/*EDITMODE-END*/;
 
 window.__renderApp = () => ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-if (window.__dashboardDataReady) {
-  window.__renderApp();
-} else {
-  window.addEventListener('dashboard-data-ready', window.__renderApp, { once: true });
-}
-
+if (window.__dashboardDataReady) { window.__renderApp(); } else { window.addEventListener('dashboard-data-ready', window.__renderApp, { once: true }); }
 </script>
 </body>
 </html>
