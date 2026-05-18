@@ -54,3 +54,12 @@ jobs:
           
           # Schiebt die fertigen Dateien ins Repository
           git push
+
+          - name: Fetch Ads Marketing API Data
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          AD_ACCOUNT_ID: ${{ secrets.AD_ACCOUNT_ID }}
+        run: python fetch_ads_data.py
+
+      - name: Process Collabs and Calculate ROI
+        run: python process_collabs_and_roi.py
