@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Instagram Business Account Data Fetcher - C& Editorial Edition
-Zieht Account-Daten, tagesaktuelle Insights, Traffic, Demografie,
-Posts (seit 2023), Thumbnails und sichert Stories.
+Instagram Business Account & Marketing API Data Fetcher - C& Editorial & Ads Edition
+Zieht Account-Daten, Insights, Demografie, archiviert Stories, lädt Thumbnails
+UND integriert Facebook Marketing API (Ads Spend, ROI & Collab-Detection).
 """
 
 import json
@@ -17,6 +17,7 @@ import requests
 # --- Systemkonfiguration ---
 ACCESS_TOKEN = os.environ.get("INSTAGRAM_ACCESS_TOKEN")
 IG_USER_ID = os.environ.get("INSTAGRAM_USER_ID")
+AD_ACCOUNT_ID = os.environ.get("AD_ACCOUNT_ID")  # Format: nur die Zahl (ohne "act_")
 API_VERSION = "v21.0"
 BASE_URL = f"https://graph.facebook.com/{API_VERSION}"
 
@@ -30,8 +31,8 @@ PROJECT_ROOT = Path(__file__).parent
 DATA_DIR = PROJECT_ROOT / "data"
 
 # --- Metrik-Definitionen ---
-METRICS_RECENT = ["reach", "views", "likes", "comments", "saved", "shares", "total_interactions"]
-METRICS_OLD = ["reach", "likes", "comments", "saved", "shares"]
+METRICS_RECENT = ["reach", "impressions", "views", "likes", "comments", "saved", "shares", "total_interactions"]
+METRICS_OLD = ["reach", "impressions", "likes", "comments", "saved", "shares"]
 REELS_EXTRA = ["ig_reels_avg_watch_time", "ig_reels_video_view_total_time"]
 STORY_METRICS = ["reach", "impressions", "replies", "taps_forward", "taps_back", "exits"]
 DEMOGRAPHIC_BREAKDOWNS = ["age", "gender", "country", "city"]
@@ -123,7 +124,8 @@ def get_all_media() -> list[dict]:
     media = []
     url = f"{BASE_URL}/{IG_USER_ID}/media"
     params = {
-        "fields": "id,caption,media_type,media_product_type,media_url,permalink,thumbnail_url,timestamp",
+        # 'owner' hinzugefügt für Collab-Detection
+        "fields": "id,caption,media_type,media_product_type,media_url,permalink,thumbnail_url,timestamp,owner",
         "limit": 100,
         "access_token": ACCESS_TOKEN,
     }
@@ -166,8 +168,80 @@ def get_media_insights(media_id: str, media_type: str, product_type: str | None,
     return insights
 
 
+# --- NEU: MARKETING API LOGIKEN ---
+
+def get_ads_marketing_data() -> tuple[dict, dict]:
+    """Holt Ad-Insights und Ad-Creatives aus dem Werbekonto."""
+    if not AD_ACCOUNT_ID:
+        print("\n⚠️ AD_ACCOUNT_ID nicht gesetzt. Überspringe Ads-Integration.")
+        return {}, {}
+
+    print(f"\nVerbinde mit Marketing API für Ad Account: act_{AD_ACCOUNT_ID}...")
+    ads_url = f"{BASE_URL}/act_{AD_ACCOUNT_ID}"
+    
+    # 1. Insights holen (Spend, Impressions, Clicks)
+    insights_params = {
+        "access_token": ACCESS_TOKEN,
+        "fields": "ad_id,spend,impressions,inline_link_clicks",
+        "date_preset": "maximum",
+        "level": "ad",
+        "limit": 500
+    }
+    insights_data = get_json(f"{ads_url}/insights", insights_params)
+    
+    ad_mapping = {}
+    for insight in insights_data.get("data", []):
+        ad_mapping[insight["ad_id"]] = {
+            "spend": float(insight.get("spend", 0.0)),
+            "impressions": int(insight.get("impressions", 0)),
+            "clicks": int(insight.get("inline_link_clicks", 0))
+        }
+
+    # 2. Creatives holen, um Ads auf IG Media-IDs zu mappen
+    creative_params = {
+        "access_token": ACCESS_TOKEN,
+        "fields": "id,effective_object_story_id",
+        "limit": 500
+    }
+    creatives_data = get_json(f"{ads_url}/adcreatives", creative_params)
+    
+    creative_to_media = {}
+    for creative in creatives_data.get("data", []):
+        story_id = creative.get("effective_object_story_id", "")
+        # Falls vorhanden, extrahiert effective_object_story_id die IG Media ID (oft nach dem Unterstrich)
+        if "_" in story_id:
+            media_id = story_id.split("_")[1]
+            creative_to_media[creative["id"]] = media_id
+
+    # 3. Ad-Struktur auflösen (Welches Creative gehört zu welcher Ad-ID)
+    ads_structure_params = {
+        "access_token": ACCESS_TOKEN,
+        "fields": "id,creative",
+        "limit": 500
+    }
+    ads_structure = get_json(f"{ads_url}/ads", ads_structure_params)
+    
+    media_ads_map = {}
+    for ad in ads_structure.get("data", []):
+        ad_id = ad["id"]
+        creative_id = ad.get("creative", {}).get("id")
+        
+        if creative_id and creative_id in creative_to_media:
+            media_id = creative_to_media[creative_id]
+            if ad_id in ad_mapping:
+                if media_id not in media_ads_map:
+                    media_ads_map[media_id] = {"spend": 0.0, "impressions": 0, "clicks": 0}
+                
+                # Werte aufaddieren, falls ein Post in mehreren Ads verwendet wird
+                media_ads_map[media_id]["spend"] += ad_mapping[ad_id]["spend"]
+                media_ads_map[media_id]["impressions"] += ad_mapping[ad_id]["impressions"]
+                media_ads_map[media_id]["clicks"] += ad_mapping[ad_id]["clicks"]
+
+    print(f"   Ads-Mapping: {len(media_ads_map)} Instagram Posts mit Paid-Aktivitäten verknüpft.")
+    return media_ads_map
+
+
 def download_thumbnail(url: str, target_path: Path) -> bool:
-    """Download a thumbnail image. Returns True on success."""
     try:
         r = requests.get(url, timeout=30, stream=True)
         if r.status_code != 200:
@@ -176,18 +250,16 @@ def download_thumbnail(url: str, target_path: Path) -> bool:
         with open(target_path, "wb") as f:
             for chunk in r.iter_content(8192):
                 f.write(chunk)
-        return target_path.stat().st_size > 100  # sanity check: not an empty/error response
+        return target_path.stat().st_size > 100
     except Exception as e:
         print(f"   Download-Fehler: {e}")
         return False
 
 
 def download_thumbnails(media_list: list[dict], username: str) -> int:
-    """Download thumbnails for the N most recent posts. Skips existing files."""
     thumb_dir = DATA_DIR / "thumbnails" / username
     thumb_dir.mkdir(parents=True, exist_ok=True)
 
-    # Sort by timestamp descending, take top N
     sorted_media = sorted(media_list, key=lambda m: m.get("timestamp", ""), reverse=True)
     top_media = sorted_media[:THUMBNAIL_LIMIT]
 
@@ -198,12 +270,10 @@ def download_thumbnails(media_list: list[dict], username: str) -> int:
         media_id = m["id"]
         target = thumb_dir / f"{media_id}.jpg"
 
-        # Skip if already exists (Instagram media is immutable, thumbnails don't change)
         if target.exists() and target.stat().st_size > 100:
             success += 1
             continue
 
-        # Choose URL: thumbnail_url for videos/reels/carousels, media_url for images
         url = m.get("thumbnail_url") or m.get("media_url")
         if not url:
             continue
@@ -284,7 +354,10 @@ def main() -> None:
     history_file = DATA_DIR / f"follower_history_{username}.json"
     update_history(account, history_file)
 
-    # 3. BEITRÄGE SEIT 2023 LADEN
+    # 3. ADS & MARKETING DATA VORAB LASSEN (falls konfiguriert)
+    media_ads_map = get_ads_marketing_data()
+
+    # 4. BEITRÄGE SEIT 2023 LADEN
     print(f"\nLade Medien (Limit: {MAX_POSTS_TO_PROCESS} Posts / Ab: {CUTOFF_DATE.strftime('%d.%m.%Y')})...")
     media = get_all_media()
     print(f"   {len(media)} Beiträge aus dem Zeitraum gefunden.")
@@ -293,16 +366,50 @@ def main() -> None:
     for i, item in enumerate(media, 1):
         if i % 25 == 0 or i == len(media):
             print(f"   Fortschritt: {i}/{len(media)}")
-        item["insights"] = get_media_insights(
-            item["id"],
+        
+        media_id = item["id"]
+        
+        # Normale organische Insights holen
+        organic_insights = get_media_insights(
+            media_id,
             item.get("media_type", ""),
             item.get("media_product_type"),
             item.get("timestamp", ""),
         )
+        
+        # --- NEU: COLLAB DETECTION ---
+        owner_id = item.get("owner", {}).get("id")
+        owner_name = item.get("owner", {}).get("username")
+        
+        is_collab = False
+        if owner_id and owner_id != IG_USER_ID:
+            is_collab = True
+
+        # --- NEU: ORGANIC VS PAID SPLIT & ROI ---
+        ads_info = media_ads_map.get(media_id, {"spend": 0.0, "impressions": 0, "clicks": 0})
+        
+        total_impressions = int(organic_insights.get("impressions", 0) or 0)
+        paid_impressions = ads_info["impressions"]
+        
+        # Organische Reichweite bereinigen (Total minus Bezahlte Impressions)
+        clean_organic_impressions = max(0, total_impressions - paid_impressions)
+        
+        # Neue Struktur direkt in das Element injizieren
+        item["ads_integration"] = {
+            "is_collab": is_collab,
+            "collab_partner_username": owner_name if is_collab else None,
+            "spend_eur": ads_info["spend"],
+            "paid_impressions": paid_impressions,
+            "organic_impressions_clean": clean_organic_impressions,
+            "roi_link_clicks": ads_info["clicks"],
+            "has_active_ads": ads_info["spend"] > 0
+        }
+        
+        item["insights"] = organic_insights
         enriched.append(item)
         time.sleep(0.1)
 
-    # 4. THUMBNAILS HERUNTERLADEN
+    # 5. THUMBNAILS HERUNTERLADEN
     download_thumbnails(enriched, username)
 
     data_file = DATA_DIR / f"instagram_data_{username}.json"
