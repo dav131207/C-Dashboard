@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-Instagram Business Account Data Fetcher
-Zieht Account-Daten, tagesaktuelle Insights und Medien-Statistiken via Graph API.
-Ausgelegt auf Multi-Account-Betrieb via GitHub Actions Matrix.
+Instagram Business Account Data Fetcher - C& Editorial Edition
+Zieht Account-Daten, tagesaktuelle Insights, Traffic, Posts (seit 2023) und sichert Stories.
 """
 
 import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -21,242 +20,186 @@ API_VERSION = "v21.0"
 BASE_URL = f"https://graph.facebook.com/{API_VERSION}"
 
 # --- Filter-Parameter ---
-MAX_POSTS_TO_PROCESS = 500
-MAX_AGE_YEARS = 2
+MAX_POSTS_TO_PROCESS = 1500 # Erhöht für Daten bis 2023
+CUTOFF_DATE = datetime(2023, 1, 1, tzinfo=timezone.utc) # Zieht alles ab 01.01.2023
 
 # --- Pfade ---
 PROJECT_ROOT = Path(__file__).parent
 DATA_DIR = PROJECT_ROOT / "data"
 
 # --- Metrik-Definitionen ---
-# Dynamische Anpassung nach Alter und Typ, um API-Fehler zu vermeiden
-# WICHTIG: 'impressions' wurde entfernt, da ab v22.0 nicht mehr unterstützt
 METRICS_RECENT = ["reach", "views", "likes", "comments", "saved", "shares", "total_interactions"]
 METRICS_OLD = ["reach", "likes", "comments", "saved", "shares"]
 REELS_EXTRA = ["ig_reels_avg_watch_time", "ig_reels_video_view_total_time"]
+STORY_METRICS = ["reach", "impressions", "replies", "taps_forward", "taps_back", "exits"]
 
 
 def die(msg: str) -> None:
-    """Bricht das Skript mit einer Fehlermeldung ab."""
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
-def check_env() -> None:
-    """Prüft, ob alle notwendigen Umgebungsvariablen gesetzt sind."""
-    if not ACCESS_TOKEN:
-        die("INSTAGRAM_ACCESS_TOKEN env var not set")
-    if not IG_USER_ID:
-        die("INSTAGRAM_USER_ID env var not set")
-
-
 def get_json(url: str, params: dict | None = None) -> dict:
-    """Führt einen GET-Request aus inklusive Retry-Logik bei Rate-Limits."""
     for attempt in range(3):
         try:
             r = requests.get(url, params=params, timeout=30)
         except requests.RequestException as e:
-            print(f"   Netzwerkfehler (Versuch {attempt + 1}): {e}")
             time.sleep(2 ** attempt)
             continue
-        
         if r.status_code == 200:
             return r.json()
-        
         if r.status_code in (429, 503):
-            wait = 5 * (attempt + 1)
-            print(f"   Rate-Limit erreicht, warte {wait} Sekunden...")
-            time.sleep(wait)
+            time.sleep(5 * (attempt + 1))
             continue
-            
         print(f"   HTTP {r.status_code}: {r.text[:200]}")
         return {}
     return {}
 
 
-def check_token_expiry() -> None:
-    """Prüft die verbleibende Gültigkeit des Access Tokens."""
-    url = f"{BASE_URL}/debug_token"
-    params = {"input_token": ACCESS_TOKEN, "access_token": ACCESS_TOKEN}
-    data = get_json(url, params).get("data", {})
-    expires_at = data.get("expires_at")
-    
-    if expires_at:
-        days_left = (datetime.fromtimestamp(expires_at, timezone.utc) - datetime.now(timezone.utc)).days
-        print(f"Token laeuft ab in {days_left} Tagen (am {datetime.fromtimestamp(expires_at).date()})")
-        if days_left < 10:
-            print("WARNUNG: Token laeuft bald ab. Bitte zeitnah erneuern.")
-
-
 def get_account_info() -> dict:
-    """Zieht allgemeine Account-Informationen sowie tagesaktuelle Profil-Insights."""
-    # 1. Basis-Informationen (Follower, Biografie, etc.)
     base_url = f"{BASE_URL}/{IG_USER_ID}"
-    params_base = {
-        "fields": "id,username,followers_count,follows_count,media_count,profile_picture_url,name",
-        "access_token": ACCESS_TOKEN,
-    }
+    params_base = {"fields": "id,username,followers_count,follows_count,media_count,profile_picture_url,name", "access_token": ACCESS_TOKEN}
     account_data = get_json(base_url, params_base)
 
-    # 2. Account Insights (Website-Klicks, Profilaufrufe der letzten 24h)
     insights_url = f"{BASE_URL}/{IG_USER_ID}/insights"
-    params_insights = {
-        "metric": "profile_views,website_clicks",
-        "period": "day",
-        "metric_type": "total_value",  # Zwingend erforderlich für neuere API Versionen
-        "access_token": ACCESS_TOKEN,
-    }
+    params_insights = {"metric": "profile_views,website_clicks", "period": "day", "metric_type": "total_value", "access_token": ACCESS_TOKEN}
     insights_data = get_json(insights_url, params_insights)
     
-    # Insights in die Account-Daten mergen
     account_data["daily_insights"] = {}
     for item in insights_data.get("data", []):
-        name = item.get("name")
-        values = item.get("values", [])
-        if values:
-            account_data["daily_insights"][name] = values[0].get("value", 0)
+        if item.get("values"):
+            account_data["daily_insights"][item["name"]] = item["values"][0].get("value", 0)
 
     return account_data
 
 
 def get_all_media() -> list[dict]:
-    """Zieht Medien-Beitraege bis zum definierten Limit (Anzahl oder Alter)."""
-    media: list[dict] = []
+    media = []
     url = f"{BASE_URL}/{IG_USER_ID}/media"
-    params: dict | None = {
-        "fields": "id,caption,media_type,media_product_type,media_url,permalink,thumbnail_url,timestamp",
-        "limit": 100,
-        "access_token": ACCESS_TOKEN,
-    }
+    params = {"fields": "id,caption,media_type,media_product_type,media_url,permalink,thumbnail_url,timestamp", "limit": 100, "access_token": ACCESS_TOKEN}
     
-    cutoff_date = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_YEARS * 365)
-
     while url and len(media) < MAX_POSTS_TO_PROCESS:
         data = get_json(url, params)
         items = data.get("data", [])
-        
-        if not items:
-            break
+        if not items: break
 
         for item in items:
-            if len(media) >= MAX_POSTS_TO_PROCESS:
-                break
-                
+            if len(media) >= MAX_POSTS_TO_PROCESS: break
             if item.get("timestamp"):
                 post_date = datetime.fromisoformat(item["timestamp"].replace("Z", "+00:00"))
-                if post_date < cutoff_date:
-                    url = ""
-                    break
-            
+                if post_date < CUTOFF_DATE:
+                    return media # Stoppt exakt am 01.01.2023
             media.append(item)
-
-        if url:
-            url = data.get("paging", {}).get("next", "")
-            params = None
             
+        url = data.get("paging", {}).get("next", "") if data.get("paging") else ""
+        params = None
     return media
 
 
 def get_media_insights(media_id: str, media_type: str, product_type: str | None, timestamp: str) -> dict:
-    """Zieht detaillierte Insights fuer einen einzelnen Beitrag (angepasst an Typ und Alter)."""
     post_date = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     age_days = (datetime.now(timezone.utc) - post_date).days
 
-    if age_days < 30:
-        metrics = list(METRICS_RECENT)
-    else:
-        metrics = list(METRICS_OLD)
-
-    if product_type == "REELS" or media_type == "VIDEO":
-        metrics.extend(REELS_EXTRA)
+    metrics = list(METRICS_RECENT) if age_days < 30 else list(METRICS_OLD)
+    if product_type == "REELS" or media_type == "VIDEO": metrics.extend(REELS_EXTRA)
 
     url = f"{BASE_URL}/{media_id}/insights"
-    params = {"metric": ",".join(metrics), "access_token": ACCESS_TOKEN}
-    data = get_json(url, params)
+    data = get_json(url, {"metric": ",".join(metrics), "access_token": ACCESS_TOKEN})
 
-    insights: dict = {}
+    insights = {}
     for item in data.get("data", []):
-        name = item["name"]
-        values = item.get("values", [])
-        if values:
-            insights[name] = values[0].get("value")
+        if item.get("values"):
+            insights[item["name"]] = item["values"][0].get("value")
     return insights
 
 
-def update_follower_history(account: dict, history_file: Path) -> None:
-    """Aktualisiert die Historien-Datei fuer das taegliche Follower-Wachstum."""
-    history: list[dict] = []
-    if history_file.exists():
-        try:
-            history = json.loads(history_file.read_text())
-        except json.JSONDecodeError:
-            history = []
+def get_and_archive_stories(username: str) -> None:
+    print("\nSichere aktuelle Stories (24h-Archivierung)...")
+    url = f"{BASE_URL}/{IG_USER_ID}/stories"
+    params = {"fields": "id,caption,media_type,media_url,timestamp", "access_token": ACCESS_TOKEN}
+    data = get_json(url, params)
+    
+    active_stories = data.get("data", [])
+    if not active_stories:
+        print("   Keine aktiven Stories gefunden.")
+        return
 
+    # Insights für jede Story laden
+    enriched_stories = []
+    for story in active_stories:
+        insights_url = f"{BASE_URL}/{story['id']}/insights"
+        i_data = get_json(insights_url, {"metric": ",".join(STORY_METRICS), "access_token": ACCESS_TOKEN})
+        story_insights = {}
+        for item in i_data.get("data", []):
+            if item.get("values"):
+                story_insights[item["name"]] = item["values"][0].get("value")
+        story["insights"] = story_insights
+        enriched_stories.append(story)
+
+    # In die ewige Archiv-Datei einfügen (Duplikate anhand der ID vermeiden)
+    stories_file = DATA_DIR / f"stories_history_{username}.json"
+    archive = json.loads(stories_file.read_text()) if stories_file.exists() else []
+    
+    existing_ids = {s["id"] for s in archive}
+    new_count = 0
+    for s in enriched_stories:
+        if s["id"] not in existing_ids:
+            archive.append(s)
+            new_count += 1
+            
+    stories_file.write_text(json.dumps(archive, indent=2))
+    print(f"   {new_count} NEUE Stories dauerhaft archiviert.")
+
+
+def update_history(account: dict, history_file: Path) -> None:
+    history = json.loads(history_file.read_text()) if history_file.exists() else []
     today = datetime.now(timezone.utc).date().isoformat()
-    followers = account.get("followers_count")
-
+    
+    # Alte Einträge für heute löschen, damit es sauber überschrieben wird
     history = [h for h in history if h.get("date") != today]
-    history.append({"date": today, "followers": followers})
+    
+    # NEU: Wir speichern jetzt auch Traffic!
+    history.append({
+        "date": today, 
+        "followers": account.get("followers_count"),
+        "profile_views": account.get("daily_insights", {}).get("profile_views", 0),
+        "website_clicks": account.get("daily_insights", {}).get("website_clicks", 0)
+    })
     history.sort(key=lambda h: h["date"])
-
     history_file.write_text(json.dumps(history, indent=2))
 
 
 def main() -> None:
-    check_env()
+    if not ACCESS_TOKEN or not IG_USER_ID: die("Umgebungsvariablen fehlen.")
     DATA_DIR.mkdir(exist_ok=True)
 
-    print("Pruefe Token-Status...")
-    check_token_expiry()
-
-    print("\nLade Account-Informationen...")
+    print("Lade Account & Traffic-Daten...")
     account = get_account_info()
-    username = account.get("username")
+    username = account.get("username", "unknown")
     
-    if not username:
-        die("Account-Informationen konnten nicht geladen werden. Bitte Token und USER_ID pruefen.")
-        
-    print(f"   @{username} | {account.get('followers_count'):,} Follower | {account.get('media_count'):,} Posts")
-    print(f"   Profilaufrufe (24h): {account.get('daily_insights', {}).get('profile_views', 0)}")
-    print(f"   Website-Klicks (24h): {account.get('daily_insights', {}).get('website_clicks', 0)}")
+    # 1. STORIES SPEICHERN
+    get_and_archive_stories(username)
 
-    # Dynamische Dateipfade basierend auf dem Username
-    data_file = DATA_DIR / f"instagram_data_{username}.json"
+    # 2. HISTORIE & TRAFFIC SPEICHERN
     history_file = DATA_DIR / f"follower_history_{username}.json"
+    update_history(account, history_file)
 
-    print(f"\nLade Medien (Max: {MAX_POSTS_TO_PROCESS} Posts / Max Alter: {MAX_AGE_YEARS} Jahre)...")
+    # 3. BEITRÄGE SEIT 2023 LADEN
+    print(f"\nLade Medien (Limit: {MAX_POSTS_TO_PROCESS} Posts / Ab: {CUTOFF_DATE.strftime('%d.%m.%Y')})...")
     media = get_all_media()
-    print(f"   {len(media)} relevante Beitraege gefunden.")
+    print(f"   {len(media)} Beiträge aus dem Zeitraum gefunden.")
 
-    print("\nLade detaillierte Insights pro Beitrag...")
-    enriched: list[dict] = []
+    enriched = []
     for i, item in enumerate(media, 1):
-        if i % 10 == 0 or i == len(media):
-            print(f"   Fortschritt: {i}/{len(media)}")
-            
-        item["insights"] = get_media_insights(
-            item["id"],
-            item.get("media_type", ""),
-            item.get("media_product_type"),
-            item.get("timestamp", "")
-        )
+        if i % 25 == 0 or i == len(media): print(f"   Fortschritt: {i}/{len(media)}")
+        item["insights"] = get_media_insights(item["id"], item.get("media_type", ""), item.get("media_product_type"), item.get("timestamp", ""))
         enriched.append(item)
-        time.sleep(0.1)
+        time.sleep(0.1) # Wichtig: Verhindert API-Blockaden bei so vielen Posts
 
-    update_follower_history(account, history_file)
-
-    output = {
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "api_version": API_VERSION,
-        "account": account,
-        "media": enriched,
-    }
-
+    data_file = DATA_DIR / f"instagram_data_{username}.json"
+    output = {"fetched_at": datetime.now(timezone.utc).isoformat(), "api_version": API_VERSION, "account": account, "media": enriched}
     data_file.write_text(json.dumps(output, indent=2, ensure_ascii=False))
-    print(f"\nErfolgreich abgeschlossen.")
-    print(f" - Daten gespeichert unter: {data_file.relative_to(PROJECT_ROOT)}")
-    print(f" - Historie aktualisiert: {history_file.relative_to(PROJECT_ROOT)}")
-
+    print("\nErfolgreich abgeschlossen.")
 
 if __name__ == "__main__":
     main()
