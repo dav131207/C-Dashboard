@@ -109,7 +109,10 @@ def build_posts_df(data: dict) -> pd.DataFrame:
     if df.empty: return df
     df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/Vienna")
     df["date"] = df["timestamp"].dt.date
-    df["engagement_rate"] = (df["total_interactions"] / df["reach"].replace(0, pd.NA) * 100).round(2)
+    
+    # Reparierte Berechnung der Engagement-Rate (verhindert Absturz bei 0 Reichweite)
+    df["engagement_rate"] = (df["total_interactions"] / df["reach"].replace(0, float("nan")) * 100).round(2)
+    
     df["format"] = df["type"].apply(lambda x: "Reel" if x == "REELS" else "Karussell" if "CAROUSEL" in x else "Video" if x == "VIDEO" else "Bild")
     return df
 
@@ -157,7 +160,7 @@ with st.sidebar:
 
 df = df_posts[(df_posts["timestamp"].dt.date >= start_date) & (df_posts["timestamp"].dt.date <= end_date)].copy()
 
-st.title("C& Instagram Dashboard")
+st.title("EDITORIAL DASHBOARD")
 st.markdown(f"<span style='color:#666; font-size:1.1rem; letter-spacing:0.5px;'><b>ZEITRAUM:</b> {start_date.strftime('%d.%m.%Y')} – {end_date.strftime('%d.%m.%Y')} &nbsp;&nbsp;|&nbsp;&nbsp; <b>{len(df)} BEITRÄGE</b></span>", unsafe_allow_html=True)
 if df.empty: st.stop()
 
@@ -280,7 +283,7 @@ st.markdown("<br><br>", unsafe_allow_html=True)
 st.markdown(
     """
     <div style="text-align: center; padding-top: 20px; border-top: 1px solid #E5E5E5; color: #888888; font-size: 0.75rem; letter-spacing: 1.5px; font-weight: 600; text-transform: uppercase;">
-        Built with love ❤️ David Krucsay
+        Built with love ❤️
     </div>
     """,
     unsafe_allow_html=True
