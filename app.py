@@ -40,14 +40,13 @@ def apply_editorial_layout(fig):
         font_family="'Helvetica Neue', Helvetica, Arial, sans-serif",
         font_color="#000000",
         margin=dict(t=40, b=30, l=0, r=0),
-        # Elegante Hover-Effekte (Tooltips)
         hoverlabel=dict(
             bgcolor="#ffffff",
             font_size=13,
             font_family="'Helvetica Neue', Helvetica, Arial, sans-serif",
             bordercolor="#cccccc"
         ),
-        hovermode="x unified" # Zieht eine schöne vertikale Linie über alle Datenpunkte beim Drüberfahren
+        hovermode="x unified"
     )
     fig.update_xaxes(
         showgrid=False, zeroline=False, title_text="", 
@@ -110,14 +109,13 @@ def build_dataframe(data: dict) -> pd.DataFrame:
     df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/Vienna")
     df["date"] = df["timestamp"].dt.date
     
-    # Absolute crash-sichere Berechnung der Engagement Rate (behebt den Runden-Fehler vollständig)
+    # Berechne ER crash-sicher
     def calc_er(row):
         if row["reach"] > 0:
-            return round((row["total_interactions"] / row["reach"]) * 100, 2)
+            return (row["total_interactions"] / row["reach"]) * 100
         return float("nan")
         
     df["engagement_rate"] = df.apply(calc_er, axis=1)
-    
     df["format"] = df["type"].apply(lambda x: "Reel" if x == "REELS" else "Karussell" if "CAROUSEL" in x else "Video" if x == "VIDEO" else "Bild")
     return df
 
@@ -128,7 +126,6 @@ if not available_files: st.stop()
 account_names = [f.stem.replace("instagram_data_", "") for f in available_files]
 
 with st.sidebar:
-    # 1. LOGO INTEGRATION (Prüft ob logo.png oder logo.jpg existiert)
     logo_png = PROJECT_ROOT / "logo.png"
     logo_jpg = PROJECT_ROOT / "logo.jpg"
     
@@ -137,10 +134,9 @@ with st.sidebar:
     elif logo_jpg.exists():
         st.image(str(logo_jpg), use_container_width=True)
     else:
-        st.markdown("## C& ANALYTICS") # Fallback, falls noch kein Logo hochgeladen wurde
+        st.markdown("## C& ANALYTICS")
         
     st.markdown("<br>", unsafe_allow_html=True)
-        
     selected_account = st.selectbox("ACCOUNT", sorted(account_names), label_visibility="collapsed")
     
     data = load_json(DATA_DIR / f"instagram_data_{selected_account}.json")
@@ -187,13 +183,12 @@ with tab_posts:
     st.markdown("### REICHWEITEN-VERLAUF FEED")
     daily = df.groupby("date")[["reach", "total_interactions"]].sum().reset_index()
     
-    # Premium Line-Chart für Reichweite
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=daily["date"], y=daily["reach"],
         mode='lines',
         line=dict(color='#000000', width=2),
-        fill='tozeroy', # Sanfte Schattierung nach unten
+        fill='tozeroy', 
         fillcolor='rgba(0,0,0,0.04)',
         name="Reichweite",
         hovertemplate="<b>%{x|%d.%m.%Y}</b><br>Reichweite: %{y:,.0f}<extra></extra>"
@@ -201,24 +196,33 @@ with tab_posts:
     st.plotly_chart(apply_editorial_layout(fig), use_container_width=True)
 
     st.markdown("<br>### TOP BEITRÄGE", unsafe_allow_html=True)
+    top_df = df.nlargest(10, "reach")[["date", "format", "caption", "reach", "engagement_rate", "permalink"]].copy()
+    top_df["engagement_rate"] = top_df["engagement_rate"].round(2) # Erst hier runden!
     st.dataframe(
-        df.nlargest(10, "reach")[["date", "format", "caption", "reach", "engagement_rate", "permalink"]].rename(
-            columns={"date": "Datum", "format": "Format", "caption": "Text", "reach": "Reichweite", "engagement_rate": "ER %", "permalink": "Link"}
-        ),
+        top_df.rename(columns={"date": "Datum", "format": "Format", "caption": "Text", "reach": "Reichweite", "engagement_rate": "ER %", "permalink": "Link"}),
         column_config={"Link": st.column_config.LinkColumn("Link", display_text="↗ Ansehen")}, hide_index=True, use_container_width=True
     )
 
 with tab_formats:
     st.markdown("### FORMAT-PERFORMANCE")
-    fmt_agg = df.groupby("format").agg(Posts=("id", "count"), Reichweite=("reach", "mean"), ER=("engagement_rate", "mean")).round(1).reset_index()
+    
+    # Aggregation ohne sofortiges Runden
+    fmt_agg = df.groupby("format").agg(
+        Posts=("id", "count"), 
+        Reichweite=("reach", "mean"), 
+        ER=("engagement_rate", "mean")
+    ).reset_index()
+    
+    # Sicher runden, leere Werte werden ignoriert
+    fmt_agg["Reichweite"] = fmt_agg["Reichweite"].fillna(0).round(0)
+    fmt_agg["ER"] = fmt_agg["ER"].fillna(0).round(2)
     
     col1, col2 = st.columns(2)
     with col1:
-        # Premium Bar-Chart
         fig1 = go.Figure(data=[go.Bar(
             x=fmt_agg["format"], y=fmt_agg["Reichweite"],
             marker_color="#000000",
-            text=fmt_agg["Reichweite"].apply(lambda x: f"{x:,.0f}"), # Zahlen direkt über den Balken
+            text=fmt_agg["Reichweite"].apply(lambda x: f"{x:,.0f}"), 
             textposition="outside",
             hovertemplate="<b>%{x}</b><br>Ø Reichweite: %{y:,.0f}<extra></extra>"
         )])
@@ -261,7 +265,6 @@ with tab_traffic:
     if len(df_history) < 2:
         st.info("Der Traffic-Tracker wurde aktiviert. Die Timeline baut sich ab morgen auf.")
     else:
-        # Premium Multi-Line Chart für Traffic
         fig_traf = go.Figure()
         fig_traf.add_trace(go.Scatter(
             x=df_history["date"], y=df_history["profile_views"],
