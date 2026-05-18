@@ -14,7 +14,7 @@ jobs:
       contents: write
     
     strategy:
-      # Verhindert Speicher-Konflikte, indem die Accounts nacheinander laufen
+      # Verhindert Speicher-Konflikte, indem die Accounts nacheinander verarbeitet werden
       max-parallel: 1
       matrix:
         # Hier definieren wir die beiden Accounts
@@ -45,6 +45,12 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
-          # Speichert nur, wenn es wirklich neue Daten gibt, und schiebt sie ins Repo
+          
+          # Speichert die Änderungen lokal, bricht aber nicht ab, falls es keine gibt
           git commit -m "Update Instagram data for ${{ matrix.account }}" || echo "No changes to commit"
+          
+          # NEU: Zieht sich den aktuellsten Stand aus dem Repository (wichtig für Account 2)
+          git pull --rebase origin main
+          
+          # Schiebt die fertigen Dateien ins Repository
           git push
