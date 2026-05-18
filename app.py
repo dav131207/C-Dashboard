@@ -94,7 +94,7 @@ def build_stories_df(file_path: Path) -> pd.DataFrame:
     return df
 
 @st.cache_data(ttl=300)
-def build_posts_df(data: dict) -> pd.DataFrame:
+def build_dataframe(data: dict) -> pd.DataFrame:
     rows = []
     for m in data.get("media", []):
         ins = m.get("insights", {}) or {}
@@ -110,8 +110,13 @@ def build_posts_df(data: dict) -> pd.DataFrame:
     df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/Vienna")
     df["date"] = df["timestamp"].dt.date
     
-    # Reparierte Berechnung der Engagement-Rate (verhindert Absturz bei 0 Reichweite)
-    df["engagement_rate"] = (df["total_interactions"] / df["reach"].replace(0, float("nan")) * 100).round(2)
+    # Absolute crash-sichere Berechnung der Engagement Rate (behebt den Runden-Fehler vollständig)
+    def calc_er(row):
+        if row["reach"] > 0:
+            return round((row["total_interactions"] / row["reach"]) * 100, 2)
+        return float("nan")
+        
+    df["engagement_rate"] = df.apply(calc_er, axis=1)
     
     df["format"] = df["type"].apply(lambda x: "Reel" if x == "REELS" else "Karussell" if "CAROUSEL" in x else "Video" if x == "VIDEO" else "Bild")
     return df
@@ -142,7 +147,7 @@ with st.sidebar:
     if not data: st.stop()
     
     account = data.get("account", {})
-    df_posts = build_posts_df(data)
+    df_all = build_dataframe(data)
     df_history = load_history(DATA_DIR / f"follower_history_{selected_account}.json")
     df_stories = build_stories_df(DATA_DIR / f"stories_history_{selected_account}.json")
 
@@ -158,7 +163,7 @@ with st.sidebar:
     
     start_date, end_date = st.date_input("ZEITRAUM", value=(date(2023, 1, 1), date.today()), format="DD.MM.YYYY")
 
-df = df_posts[(df_posts["timestamp"].dt.date >= start_date) & (df_posts["timestamp"].dt.date <= end_date)].copy()
+df = df_all[(df_all["timestamp"].dt.date >= start_date) & (df_all["timestamp"].dt.date <= end_date)].copy()
 
 st.title("EDITORIAL DASHBOARD")
 st.markdown(f"<span style='color:#666; font-size:1.1rem; letter-spacing:0.5px;'><b>ZEITRAUM:</b> {start_date.strftime('%d.%m.%Y')} – {end_date.strftime('%d.%m.%Y')} &nbsp;&nbsp;|&nbsp;&nbsp; <b>{len(df)} BEITRÄGE</b></span>", unsafe_allow_html=True)
