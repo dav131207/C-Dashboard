@@ -159,7 +159,6 @@ with tab_posts:
     daily_chart_data = df.groupby("Datum")["Reichweite"].sum().reset_index()
     daily_chart_data["Datum"] = pd.to_datetime(daily_chart_data["Datum"])
     
-    # Sicherer Aufbau über px.area initialisiert Achsen korrekt
     fig = px.area(daily_chart_data, x="Datum", y="Reichweite", color_discrete_sequence=["#000000"])
     fig.update_traces(fillcolor='rgba(0,0,0,0.04)', line=dict(width=2), hovertemplate="Reichweite: %{y:,.0f}<extra></extra>")
     fig.update_xaxes(tickformat="%d.%m.%Y")
@@ -184,22 +183,35 @@ with tab_formats:
         format_stats[f]["reach_sum"] += p["Reichweite"]
         format_stats[f]["er_sum"] += p["ER %"]
         
-    fmt_names, fmt_avg_reach, fmt_avg_er = [], [], []
+    fmt_data_list = []
     for f, stats in format_stats.items():
-        fmt_names.append(f)
-        fmt_avg_reach.append(int(stats["reach_sum"] / stats["count"]))
-        fmt_avg_er.append(round(stats["er_sum"] / stats["count"], 2))
+        fmt_data_list.append({
+            "Format": f,
+            "Ø Reichweite": int(stats["reach_sum"] / stats["count"]),
+            "Ø Engagement %": round(stats["er_sum"] / stats["count"], 2)
+        })
+        
+    # Hier erstellen wir den expliziten DataFrame für Plotly, damit die Achsen sofort da sind!
+    df_fmt = pd.DataFrame(fmt_data_list)
 
     col1, col2 = st.columns(2)
     with col1:
-        fig1 = px.bar(x=fmt_names, y=fmt_avg_reach, color_discrete_sequence=["#000000"])
-        fig1.update_traces(text=[f"{x:,}".replace(",", ".") for x in fmt_avg_reach], textposition="outside", hovertemplate="Ø Reichweite: %{y:,.0f}<extra></extra>")
+        fig1 = px.bar(df_fmt, x="Format", y="Ø Reichweite", color_discrete_sequence=["#000000"])
+        fig1.update_traces(
+            text=df_fmt["Ø Reichweite"].apply(lambda x: f"{x:,}".replace(",", ".")), 
+            textposition="outside", 
+            hovertemplate="Ø Reichweite: %{y:,.0f}<extra></extra>"
+        )
         fig1.update_layout(title="Ø REICHWEITE PRO FORMAT", bargap=0.3)
         st.plotly_chart(apply_editorial_layout(fig1), use_container_width=True)
         
     with col2:
-        fig2 = px.bar(x=fmt_names, y=fmt_avg_er, color_discrete_sequence=["#888888"])
-        fig2.update_traces(text=[f"{x}%" for x in fmt_avg_er], textposition="outside", hovertemplate="Ø Engagement: %{y}%<extra></extra>")
+        fig2 = px.bar(df_fmt, x="Format", y="Ø Engagement %", color_discrete_sequence=["#888888"])
+        fig2.update_traces(
+            text=df_fmt["Ø Engagement %"].apply(lambda x: f"{x}%"), 
+            textposition="outside", 
+            hovertemplate="Ø Engagement: %{y}%<extra></extra>"
+        )
         fig2.update_layout(title="Ø ENGAGEMENT PRO FORMAT", bargap=0.3)
         st.plotly_chart(apply_editorial_layout(fig2), use_container_width=True)
 
@@ -222,6 +234,8 @@ with tab_traffic:
         st.info("Der Traffic-Verlauf baut sich ab dem nächsten automatischen Lauf morgen auf.")
     else:
         hist_df = pd.DataFrame(history_data)
+        
+        # Traffic-Meldung auch via sauberem DataFrame-px-Befehl
         fig_traf = px.line(hist_df, x="date", y=["profile_views", "website_clicks"], color_discrete_sequence=["#000000", "#aaaaaa"])
         fig_traf.update_traces(mode="lines+markers", marker=dict(size=6))
         st.plotly_chart(apply_editorial_layout(fig_traf), use_container_width=True)
