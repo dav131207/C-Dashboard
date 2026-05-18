@@ -2,16 +2,22 @@ name: Fetch Instagram Data
 
 on:
   schedule:
-    - cron: '0 4 * * *' # Läuft täglich um 04:00 Uhr
+    - cron: '0 4 * * *' # Läuft täglich um 04:00 Uhr UTC
   workflow_dispatch:    # Erlaubt das manuelle Starten über den GitHub-Button
 
 jobs:
   fetch-data:
     runs-on: ubuntu-latest
     
-    # Hier definieren wir die beiden Accounts als Matrix
+    # Zwingend erforderlich für den fehlerfreien Git Push (Schreibrechte)
+    permissions:
+      contents: write
+    
     strategy:
+      # Verhindert Speicher-Konflikte, indem die Accounts nacheinander laufen
+      max-parallel: 1
       matrix:
+        # Hier definieren wir die beiden Accounts
         account: [account_1, account_2]
 
     steps:
@@ -22,15 +28,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip' # Beschleunigt zukünftige Durchläufe
 
       - name: Install Dependencies
-        # Füge hier deine benötigten Bibliotheken ein (z.B. requests, pandas)
         run: pip install requests pandas
 
       - name: Run fetch_data.py for ${{ matrix.account }}
         run: python fetch_data.py
         env:
-          # Hier weisen wir die passenden Secrets dynamisch zu!
+          # Dynamische Zuweisung der Secrets je nach Account
           INSTAGRAM_USER_ID: ${{ matrix.account == 'account_1' && secrets.INSTAGRAM_USER_ID_1 || secrets.INSTAGRAM_USER_ID_2 }}
           INSTAGRAM_ACCESS_TOKEN: ${{ matrix.account == 'account_1' && secrets.INSTAGRAM_ACCESS_TOKEN_1 || secrets.INSTAGRAM_ACCESS_TOKEN_2 }}
 
@@ -39,5 +45,6 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
+          # Speichert nur, wenn es wirklich neue Daten gibt, und schiebt sie ins Repo
           git commit -m "Update Instagram data for ${{ matrix.account }}" || echo "No changes to commit"
           git push
