@@ -157,7 +157,7 @@ with st.sidebar:
 
 df = df_posts[(df_posts["timestamp"].dt.date >= start_date) & (df_posts["timestamp"].dt.date <= end_date)].copy()
 
-st.title("EDITORIAL DASHBOARD")
+st.title("C& Instagram Dashboard")
 st.markdown(f"<span style='color:#666; font-size:1.1rem; letter-spacing:0.5px;'><b>ZEITRAUM:</b> {start_date.strftime('%d.%m.%Y')} – {end_date.strftime('%d.%m.%Y')} &nbsp;&nbsp;|&nbsp;&nbsp; <b>{len(df)} BEITRÄGE</b></span>", unsafe_allow_html=True)
 if df.empty: st.stop()
 
@@ -274,3 +274,14 @@ with tab_traffic:
         fig_traf = apply_editorial_layout(fig_traf)
         fig_traf.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
         st.plotly_chart(fig_traf, use_container_width=True)
+
+# --- Footer ---
+st.markdown("<br><br>", unsafe_allow_html=True)
+st.markdown(
+    """
+    <div style="text-align: center; padding-top: 20px; border-top: 1px solid #E5E5E5; color: #888888; font-size: 0.75rem; letter-spacing: 1.5px; font-weight: 600; text-transform: uppercase;">
+        Built with love ❤️ David Krucsay
+    </div>
+    """,
+    unsafe_allow_html=True
+)
