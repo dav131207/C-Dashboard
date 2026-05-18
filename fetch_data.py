@@ -30,7 +30,8 @@ DATA_DIR = PROJECT_ROOT / "data"
 
 # --- Metrik-Definitionen ---
 # Dynamische Anpassung nach Alter und Typ, um API-Fehler zu vermeiden
-METRICS_RECENT = ["reach", "impressions", "views", "likes", "comments", "saved", "shares", "total_interactions"]
+# WICHTIG: 'impressions' wurde entfernt, da ab v22.0 nicht mehr unterstützt
+METRICS_RECENT = ["reach", "views", "likes", "comments", "saved", "shares", "total_interactions"]
 METRICS_OLD = ["reach", "likes", "comments", "saved", "shares"]
 REELS_EXTRA = ["ig_reels_avg_watch_time", "ig_reels_video_view_total_time"]
 
@@ -102,6 +103,7 @@ def get_account_info() -> dict:
     params_insights = {
         "metric": "profile_views,website_clicks",
         "period": "day",
+        "metric_type": "total_value",  # Zwingend erforderlich für neuere API Versionen
         "access_token": ACCESS_TOKEN,
     }
     insights_data = get_json(insights_url, params_insights)
