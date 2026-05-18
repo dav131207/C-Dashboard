@@ -13,7 +13,7 @@ import streamlit as st
 
 st.set_page_config(page_title="C& Analytics", layout="wide", page_icon="⬛", initial_sidebar_state="expanded")
 
-# --- Custom CSS (Magazin-Look & saubere KPIs) ---
+# --- Custom CSS (C& Magazin-Look) ---
 custom_css = """
 <style>
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
@@ -35,145 +35,120 @@ DATA_DIR = PROJECT_ROOT / "data"
 def apply_editorial_layout(fig):
     """Verpasst allen Diagrammen den edlen C& Magazin-Look"""
     fig.update_layout(
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        font_family="'Helvetica Neue', Helvetica, Arial, sans-serif",
-        font_color="#000000",
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font_family="'Helvetica Neue', Helvetica, Arial, sans-serif", font_color="#000000",
         margin=dict(t=40, b=30, l=0, r=0),
-        hoverlabel=dict(
-            bgcolor="#ffffff",
-            font_size=13,
-            font_family="'Helvetica Neue', Helvetica, Arial, sans-serif",
-            bordercolor="#cccccc"
-        ),
+        hoverlabel=dict(bgcolor="#ffffff", font_size=13, bordercolor="#cccccc"),
         hovermode="x unified"
     )
-    fig.update_xaxes(
-        showgrid=False, zeroline=False, title_text="", 
-        tickfont=dict(color="#888888", size=11), tickpadding=10
-    )
-    fig.update_yaxes(
-        showgrid=True, gridcolor="#F0F0F0", zeroline=False, title_text="", 
-        tickfont=dict(color="#888888", size=11), tickpadding=10
-    )
+    fig.update_xaxes(showgrid=False, zeroline=False, title_text="", tickfont=dict(color="#888888", size=11), tickpadding=10)
+    fig.update_yaxes(showgrid=True, gridcolor="#F0F0F0", zeroline=False, title_text="", tickfont=dict(color="#888888", size=11), tickpadding=10)
     return fig
 
 # --- Lade-Funktionen ---
-@st.cache_data(ttl=300)
 def load_json(file_path: Path):
     return json.loads(file_path.read_text(encoding="utf-8")) if file_path.exists() else None
 
-@st.cache_data(ttl=300)
-def load_history(file_path: Path) -> pd.DataFrame:
-    data = load_json(file_path) or []
-    df = pd.DataFrame(data)
-    if not df.empty:
-        df["date"] = pd.to_datetime(df["date"])
-        if "website_clicks" not in df.columns: df["website_clicks"] = 0
-        if "profile_views" not in df.columns: df["profile_views"] = 0
-    return df
+# --- Main App Logic ---
+if not DATA_DIR.exists():
+    st.error("Der Ordner 'data' wurde nicht gefunden.")
+    st.stop()
 
-@st.cache_data(ttl=300)
-def build_stories_df(file_path: Path) -> pd.DataFrame:
-    data = load_json(file_path) or []
-    rows = []
-    for s in data:
-        ins = s.get("insights", {})
-        rows.append({
-            "timestamp": pd.to_datetime(s.get("timestamp", "")),
-            "reach": ins.get("reach", 0) or 0,
-            "impressions": ins.get("impressions", 0) or 0,
-            "replies": ins.get("replies", 0) or 0,
-            "exits": ins.get("exits", 0) or 0,
-        })
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/Vienna")
-        df["date"] = df["timestamp"].dt.date
-    return df
-
-@st.cache_data(ttl=300)
-def build_dataframe(data: dict) -> pd.DataFrame:
-    rows = []
-    for m in data.get("media", []):
-        ins = m.get("insights", {}) or {}
-        rows.append({
-            "id": m["id"], "timestamp": pd.to_datetime(m["timestamp"]),
-            "caption": (m.get("caption") or "").replace("\n", " ")[:120],
-            "type": m.get("media_product_type") or m.get("media_type", "UNKNOWN"),
-            "permalink": m.get("permalink", ""),
-            "reach": ins.get("reach", 0) or 0, "total_interactions": ins.get("total_interactions", 0) or 0,
-        })
-    df = pd.DataFrame(rows)
-    if df.empty: return df
-    df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/Vienna")
-    df["date"] = df["timestamp"].dt.date
-    
-    # Berechne ER crash-sicher
-    def calc_er(row):
-        if row["reach"] > 0:
-            return (row["total_interactions"] / row["reach"]) * 100
-        return float("nan")
-        
-    df["engagement_rate"] = df.apply(calc_er, axis=1)
-    df["format"] = df["type"].apply(lambda x: "Reel" if x == "REELS" else "Karussell" if "CAROUSEL" in x else "Video" if x == "VIDEO" else "Bild")
-    return df
-
-# --- Init & Sidebar ---
-if not DATA_DIR.exists(): st.stop()
 available_files = list(DATA_DIR.glob("instagram_data_*.json"))
-if not available_files: st.stop()
+if not available_files:
+    st.error("Keine Profildaten im Ordner 'data' gefunden.")
+    st.stop()
+
 account_names = [f.stem.replace("instagram_data_", "") for f in available_files]
 
 with st.sidebar:
     logo_png = PROJECT_ROOT / "logo.png"
     logo_jpg = PROJECT_ROOT / "logo.jpg"
-    
-    if logo_png.exists():
-        st.image(str(logo_png), use_container_width=True)
-    elif logo_jpg.exists():
-        st.image(str(logo_jpg), use_container_width=True)
-    else:
-        st.markdown("## C& ANALYTICS")
+    if logo_png.exists(): st.image(str(logo_png), use_container_width=True)
+    elif logo_jpg.exists(): st.image(str(logo_jpg), use_container_width=True)
+    else: st.markdown("## C& ANALYTICS")
         
     st.markdown("<br>", unsafe_allow_html=True)
     selected_account = st.selectbox("ACCOUNT", sorted(account_names), label_visibility="collapsed")
     
-    data = load_json(DATA_DIR / f"instagram_data_{selected_account}.json")
-    if not data: st.stop()
+    raw_data = load_json(DATA_DIR / f"instagram_data_{selected_account}.json")
+    if not raw_data or "media" not in raw_data:
+        st.error(f"Die Datei für @{selected_account} enthält keine gültigen Daten.")
+        st.stop()
+        
+    account = raw_data.get("account", {})
     
-    account = data.get("account", {})
-    df_all = build_dataframe(data)
-    df_history = load_history(DATA_DIR / f"follower_history_{selected_account}.json")
-    df_stories = build_stories_df(DATA_DIR / f"stories_history_{selected_account}.json")
-
     st.divider()
     st.markdown(f"**@{account.get('username', selected_account)}**")
     st.metric("Follower", f"{account.get('followers_count', 0):,}".replace(",", "."))
     
+    daily_insights = account.get("daily_insights", {})
     st.markdown("<br><b>TRAFFIC HEUTE (24H)</b>", unsafe_allow_html=True)
     col_c, col_d = st.columns(2)
-    col_c.metric("Profilaufrufe", f"{account.get('daily_insights', {}).get('profile_views', 0):,}".replace(",", "."))
-    col_d.metric("Link-Klicks", f"{account.get('daily_insights', {}).get('website_clicks', 0):,}".replace(",", "."))
+    col_c.metric("Profilaufrufe", f"{daily_insights.get('profile_views', 0):,}".replace(",", "."))
+    col_d.metric("Link-Klicks", f"{daily_insights.get('website_clicks', 0):,}".replace(",", "."))
     st.divider()
     
     start_date, end_date = st.date_input("ZEITRAUM", value=(date(2023, 1, 1), date.today()), format="DD.MM.YYYY")
 
-df = df_all[(df_all["timestamp"].dt.date >= start_date) & (df_all["timestamp"].dt.date <= end_date)].copy()
+# --- Datenaufbereitung ---
+posts_list = []
+for m in raw_data.get("media", []):
+    ins = m.get("insights", {}) or {}
+    
+    try:
+        dt = pd.to_datetime(m["timestamp"]).tz_convert("Europe/Vienna").date()
+    except:
+        continue
+        
+    if dt < start_date or dt > end_date:
+        continue
+        
+    reach = int(ins.get("reach", 0) or 0)
+    interactions = int(ins.get("total_interactions", 0) or 0)
+    
+    er = 0.0
+    if reach > 0:
+        er = round((interactions / reach) * 100, 2)
+        
+    prod_type = m.get("media_product_type") or m.get("media_type", "UNKNOWN")
+    fmt = "Bild"
+    if prod_type == "REELS": fmt = "Reel"
+    elif "CAROUSEL" in prod_type: fmt = "Karussell"
+    elif prod_type == "VIDEO": fmt = "Video"
+    
+    posts_list.append({
+        "Datum": dt,
+        "Format": fmt,
+        "Text": (m.get("caption") or "").replace("\n", " ")[:120],
+        "Reichweite": reach,
+        "Interaktionen": interactions,
+        "ER %": er,
+        "Link": m.get("permalink", "")
+    })
+
+if not posts_list:
+    st.warning("Keine Beiträge im gewählten Zeitraum gefunden.")
+    st.stop()
+
+df = pd.DataFrame(posts_list)
+
+avg_reach = int(df["Reichweite"].mean())
+max_reach = int(df["Reichweite"].max())
+total_interactions = int(df["Interaktionen"].sum())
+avg_er = df["ER %"].mean()
 
 st.title("EDITORIAL DASHBOARD")
 st.markdown(f"<span style='color:#666; font-size:1.1rem; letter-spacing:0.5px;'><b>ZEITRAUM:</b> {start_date.strftime('%d.%m.%Y')} – {end_date.strftime('%d.%m.%Y')} &nbsp;&nbsp;|&nbsp;&nbsp; <b>{len(df)} BEITRÄGE</b></span>", unsafe_allow_html=True)
-if df.empty: st.stop()
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# --- KPIs ---
 k1, k2, k3, k4 = st.columns(4)
-k1.metric("Ø Reichweite pro Post", f"{int(df['reach'].mean()):,}".replace(",", "."))
-k2.metric("Max. Reichweite (Peak)", f"{int(df['reach'].max()):,}".replace(",", "."))
-k3.metric("Total Interaktionen", f"{int(df['total_interactions'].sum()):,}".replace(",", "."))
-mean_er = df["engagement_rate"].dropna().mean()
-k4.metric("Ø Engagement-Rate", f"{mean_er:.2f}%" if pd.notna(mean_er) else "—")
+k1.metric("Ø Reichweite pro Post", f"{avg_reach:,}".replace(",", "."))
+k2.metric("Max. Reichweite (Peak)", f"{max_reach:,}".replace(",", "."))
+k3.metric("Total Interaktionen", f"{total_interactions:,}".replace(",", "."))
+k4.metric("Ø Engagement-Rate", f"{avg_er:.2f}%")
+
 st.markdown("<br><br>", unsafe_allow_html=True)
 
 # --- Tabs ---
@@ -181,110 +156,75 @@ tab_posts, tab_formats, tab_stories, tab_traffic = st.tabs(["MAIN FEED", "FORMAT
 
 with tab_posts:
     st.markdown("### REICHWEITEN-VERLAUF FEED")
-    daily = df.groupby("date")[["reach", "total_interactions"]].sum().reset_index()
+    daily_chart_data = df.groupby("Datum")["Reichweite"].sum().reset_index()
+    daily_chart_data["Datum"] = pd.to_datetime(daily_chart_data["Datum"])
     
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=daily["date"], y=daily["reach"],
-        mode='lines',
-        line=dict(color='#000000', width=2),
-        fill='tozeroy', 
-        fillcolor='rgba(0,0,0,0.04)',
-        name="Reichweite",
-        hovertemplate="<b>%{x|%d.%m.%Y}</b><br>Reichweite: %{y:,.0f}<extra></extra>"
-    ))
+    # Sicherer Aufbau über px.area initialisiert Achsen korrekt
+    fig = px.area(daily_chart_data, x="Datum", y="Reichweite", color_discrete_sequence=["#000000"])
+    fig.update_traces(fillcolor='rgba(0,0,0,0.04)', line=dict(width=2), hovertemplate="Reichweite: %{y:,.0f}<extra></extra>")
+    fig.update_xaxes(tickformat="%d.%m.%Y")
     st.plotly_chart(apply_editorial_layout(fig), use_container_width=True)
 
     st.markdown("<br>### TOP BEITRÄGE", unsafe_allow_html=True)
-    top_df = df.nlargest(10, "reach")[["date", "format", "caption", "reach", "engagement_rate", "permalink"]].copy()
-    top_df["engagement_rate"] = top_df["engagement_rate"].round(2) # Erst hier runden!
     st.dataframe(
-        top_df.rename(columns={"date": "Datum", "format": "Format", "caption": "Text", "reach": "Reichweite", "engagement_rate": "ER %", "permalink": "Link"}),
-        column_config={"Link": st.column_config.LinkColumn("Link", display_text="↗ Ansehen")}, hide_index=True, use_container_width=True
+        df.nlargest(10, "Reichweite")[["Datum", "Format", "Text", "Reichweite", "ER %", "Link"]],
+        column_config={"Link": st.column_config.LinkColumn("Link", display_text="↗ Ansehen"), "Datum": st.column_config.DateColumn(format="DD.MM.YYYY")},
+        hide_index=True, use_container_width=True
     )
 
 with tab_formats:
     st.markdown("### FORMAT-PERFORMANCE")
     
-    # Aggregation ohne sofortiges Runden
-    fmt_agg = df.groupby("format").agg(
-        Posts=("id", "count"), 
-        Reichweite=("reach", "mean"), 
-        ER=("engagement_rate", "mean")
-    ).reset_index()
-    
-    # Sicher runden, leere Werte werden ignoriert
-    fmt_agg["Reichweite"] = fmt_agg["Reichweite"].fillna(0).round(0)
-    fmt_agg["ER"] = fmt_agg["ER"].fillna(0).round(2)
-    
+    format_stats = {}
+    for p in posts_list:
+        f = p["Format"]
+        if f not in format_stats:
+            format_stats[f] = {"count": 0, "reach_sum": 0, "er_sum": 0}
+        format_stats[f]["count"] += 1
+        format_stats[f]["reach_sum"] += p["Reichweite"]
+        format_stats[f]["er_sum"] += p["ER %"]
+        
+    fmt_names, fmt_avg_reach, fmt_avg_er = [], [], []
+    for f, stats in format_stats.items():
+        fmt_names.append(f)
+        fmt_avg_reach.append(int(stats["reach_sum"] / stats["count"]))
+        fmt_avg_er.append(round(stats["er_sum"] / stats["count"], 2))
+
     col1, col2 = st.columns(2)
     with col1:
-        fig1 = go.Figure(data=[go.Bar(
-            x=fmt_agg["format"], y=fmt_agg["Reichweite"],
-            marker_color="#000000",
-            text=fmt_agg["Reichweite"].apply(lambda x: f"{x:,.0f}"), 
-            textposition="outside",
-            hovertemplate="<b>%{x}</b><br>Ø Reichweite: %{y:,.0f}<extra></extra>"
-        )])
+        fig1 = px.bar(x=fmt_names, y=fmt_avg_reach, color_discrete_sequence=["#000000"])
+        fig1.update_traces(text=[f"{x:,}".replace(",", ".") for x in fmt_avg_reach], textposition="outside", hovertemplate="Ø Reichweite: %{y:,.0f}<extra></extra>")
         fig1.update_layout(title="Ø REICHWEITE PRO FORMAT", bargap=0.3)
         st.plotly_chart(apply_editorial_layout(fig1), use_container_width=True)
         
     with col2:
-        fig2 = go.Figure(data=[go.Bar(
-            x=fmt_agg["format"], y=fmt_agg["ER"],
-            marker_color="#888888",
-            text=fmt_agg["ER"].apply(lambda x: f"{x}%"),
-            textposition="outside",
-            hovertemplate="<b>%{x}</b><br>Ø Engagement: %{y}%<extra></extra>"
-        )])
+        fig2 = px.bar(x=fmt_names, y=fmt_avg_er, color_discrete_sequence=["#888888"])
+        fig2.update_traces(text=[f"{x}%" for x in fmt_avg_er], textposition="outside", hovertemplate="Ø Engagement: %{y}%<extra></extra>")
         fig2.update_layout(title="Ø ENGAGEMENT PRO FORMAT", bargap=0.3)
         st.plotly_chart(apply_editorial_layout(fig2), use_container_width=True)
 
 with tab_stories:
     st.markdown("### STORY PERFORMANCE")
-    if df_stories.empty:
-        st.info("Das Story-Archiv füllt sich ab dem nächsten automatischen Lauf.")
+    stories_file = DATA_DIR / f"stories_history_{selected_account}.json"
+    stories_data = load_json(stories_file) or []
+    
+    if not stories_data:
+        st.info("Das Story-Archiv füllt sich ab dem nächsten automatischen API-Lauf morgen um 04:00 Uhr.")
     else:
-        df_st = df_stories[(df_stories["date"] >= start_date) & (df_stories["date"] <= end_date)]
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Gespeicherte Stories", len(df_st))
-        c2.metric("Ø Story Reichweite", f"{int(df_st['reach'].mean()):,}".replace(",", ".") if not df_st.empty else 0)
-        c3.metric("Ø Antworten (Replies)", f"{int(df_st['replies'].mean())}" if not df_st.empty else 0)
-        
-        daily_st = df_st.groupby("date")["reach"].mean().reset_index()
-        fig_st = go.Figure(data=[go.Bar(
-            x=daily_st["date"], y=daily_st["reach"],
-            marker_color="#000000",
-            hovertemplate="<b>%{x|%d.%m.%Y}</b><br>Ø Reichweite: %{y:,.0f}<extra></extra>"
-        )])
-        fig_st.update_layout(title="Ø STORY-REICHWEITE PRO TAG", bargap=0.1)
-        st.plotly_chart(apply_editorial_layout(fig_st), use_container_width=True)
+        st.success(f"{len(stories_data)} archivierte Stories im System gefunden.")
 
 with tab_traffic:
     st.markdown("### TRAFFIC TIMELINE")
-    if len(df_history) < 2:
-        st.info("Der Traffic-Tracker wurde aktiviert. Die Timeline baut sich ab morgen auf.")
+    history_file = DATA_DIR / f"follower_history_{selected_account}.json"
+    history_data = load_json(history_file) or []
+    
+    if len(history_data) < 2:
+        st.info("Der Traffic-Verlauf baut sich ab dem nächsten automatischen Lauf morgen auf.")
     else:
-        fig_traf = go.Figure()
-        fig_traf.add_trace(go.Scatter(
-            x=df_history["date"], y=df_history["profile_views"],
-            mode="lines+markers",
-            name="Profilaufrufe",
-            line=dict(color="#000000", width=3),
-            marker=dict(size=6, color="#000000"),
-            hovertemplate="Aufrufe: %{y:,.0f}<extra></extra>"
-        ))
-        fig_traf.add_trace(go.Scatter(
-            x=df_history["date"], y=df_history["website_clicks"],
-            mode="lines+markers",
-            name="Website Klicks",
-            line=dict(color="#aaaaaa", width=3, dash='dot'),
-            marker=dict(size=6, color="#aaaaaa"),
-            hovertemplate="Klicks: %{y:,.0f}<extra></extra>"
-        ))
-        fig_traf = apply_editorial_layout(fig_traf)
-        fig_traf.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-        st.plotly_chart(fig_traf, use_container_width=True)
+        hist_df = pd.DataFrame(history_data)
+        fig_traf = px.line(hist_df, x="date", y=["profile_views", "website_clicks"], color_discrete_sequence=["#000000", "#aaaaaa"])
+        fig_traf.update_traces(mode="lines+markers", marker=dict(size=6))
+        st.plotly_chart(apply_editorial_layout(fig_traf), use_container_width=True)
 
 # --- Footer ---
 st.markdown("<br><br>", unsafe_allow_html=True)
