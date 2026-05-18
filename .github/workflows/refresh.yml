@@ -12,7 +12,7 @@ jobs:
     # Zwingend erforderlich für den fehlerfreien Git Push (Schreibrechte)
     permissions:
       contents: write
-    
+      
     strategy:
       # Verhindert Speicher-Konflikte, indem die Accounts nacheinander verarbeitet werden
       max-parallel: 1
@@ -31,15 +31,20 @@ jobs:
           cache: 'pip' # Beschleunigt zukünftige Durchläufe
 
       - name: Install Dependencies
-        run: pip install requests pandas
+        run: pip install requests
 
-      - name: Run fetch_data.py for ${{ matrix.account }}
+      # Führt das neue, kombinierte Skript aus (holt Organisch + Ads + Collabs)
+      # Wichtig: Der Name des Skripts muss exakt so heißen, wie deine Python-Datei (z. B. fetch_data.py)
+      <dfn>- name: Run Fetcher Script for ${{ matrix.account }}</dfn>
         run: python fetch_data.py
         env:
-          # Dynamische Zuweisung der Secrets je nach Account
+          # Dynamische Zuweisung der Standard-Secrets
           INSTAGRAM_USER_ID: ${{ matrix.account == 'account_1' && secrets.INSTAGRAM_USER_ID_1 || secrets.INSTAGRAM_USER_ID_2 }}
           INSTAGRAM_ACCESS_TOKEN: ${{ matrix.account == 'account_1' && secrets.INSTAGRAM_ACCESS_TOKEN_1 || secrets.INSTAGRAM_ACCESS_TOKEN_2 }}
+          # Dynamische Zuweisung der neuen Ad Account IDs für das Ads-Mapping
+          AD_ACCOUNT_ID: ${{ matrix.account == 'account_1' && secrets.AD_ACCOUNT_ID_1 || secrets.AD_ACCOUNT_ID_2 }}
 
+      # Speichert alle generierten Daten und Thumbnails sauber ab
       - name: Commit and Push changes
         run: |
           git config --global user.name "github-actions[bot]"
@@ -47,19 +52,10 @@ jobs:
           git add data/
           
           # Speichert die Änderungen lokal, bricht aber nicht ab, falls es keine gibt
-          git commit -m "Update Instagram data for ${{ matrix.account }}" || echo "No changes to commit"
+          git commit -m "Update Instagram & Ads data for ${{ matrix.account }}" || echo "No changes to commit"
           
-          # NEU: Zieht sich den aktuellsten Stand aus dem Repository (wichtig für Account 2)
+          # Holt sich den aktuellsten Stand aus dem Repository (wichtig für den 2. Account in der Matrix)
           git pull --rebase origin main
           
           # Schiebt die fertigen Dateien ins Repository
           git push
-
-          - name: Fetch Ads Marketing API Data
-        env:
-          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
-          AD_ACCOUNT_ID: ${{ secrets.AD_ACCOUNT_ID }}
-        run: python fetch_ads_data.py
-
-      - name: Process Collabs and Calculate ROI
-        run: python process_collabs_and_roi.py
