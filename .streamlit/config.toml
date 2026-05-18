@@ -1,1 +1,15 @@
+[theme]
+# Die Hauptfarbe (für Slider, aktive Tabs, Buttons) - tiefschwarz wie bei C&
+primaryColor = "#000000" 
 
+# Hintergrundfarbe der gesamten Seite - reinstes Weiß
+backgroundColor = "#FFFFFF"
+
+# Hintergrundfarbe der Seitenleiste - ein extrem helles, edles Grau
+secondaryBackgroundColor = "#F9F9F9"
+
+# Textfarbe - tiefschwarz
+textColor = "#000000"
+
+# Schriftart
+font = "sans serif"
