@@ -1,7 +1,6 @@
 """
-Instagram Analytics Dashboard
-Liest dynamisch alle Accounts aus dem data/-Ordner und
-visualisiert Reichweite, Engagement, Format-Performance & Follower-Wachstum.
+Instagram Analytics Dashboard - Editorial C& Design
+Liest dynamisch alle Accounts aus dem data/-Ordner.
 """
 
 import json
@@ -14,11 +13,69 @@ import streamlit as st
 
 # --- Page setup ---
 st.set_page_config(
-    page_title="Instagram Dashboard",
+    page_title="C& Analytics",
     layout="wide",
-    page_icon="📊",
+    page_icon="⬛",
     initial_sidebar_state="expanded",
 )
+
+# --- C& Custom CSS Styling ---
+# Macht das Dashboard zu einer cleanen, markenkonformen Website
+custom_css = """
+<style>
+    /* Verstecke das Streamlit Standard-Menü und Footer */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Mache Hauptüberschriften uppercase wie auf contemporaryand.com */
+    h1, h2, h3 {
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 700 !important;
+    }
+    
+    /* Minimalistische KPI Karten */
+    [data-testid="stMetric"] {
+        border-top: 2px solid #000;
+        padding-top: 10px;
+        background-color: #fff;
+    }
+    [data-testid="stMetricLabel"] {
+        text-transform: uppercase;
+        font-size: 0.85rem;
+        letter-spacing: 0.5px;
+        color: #666;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 2rem !important;
+        font-weight: 700;
+        color: #000;
+    }
+    
+    /* Cleane Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: transparent;
+        border-radius: 0px;
+        color: #666;
+        text-transform: uppercase;
+        font-weight: 600;
+        font-size: 0.9rem;
+        letter-spacing: 1px;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #000 !important;
+        border-bottom: 2px solid #000 !important;
+    }
+</style>
+"""
+st.markdown(custom_css, unsafe_allow_html=True)
+
 
 PROJECT_ROOT = Path(__file__).parent
 DATA_DIR = PROJECT_ROOT / "data"
@@ -29,6 +86,20 @@ WEEKDAYS_DE = {
 }
 WEEKDAY_ORDER = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
 
+# --- Helper Funktion für einheitliches Chart-Design ---
+def apply_editorial_layout(fig):
+    """Entfernt bunte Farben und Gitterlinien für den Editorial Look"""
+    fig.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_family="sans-serif",
+        font_color="#000000",
+        margin=dict(t=30, b=20, l=0, r=0),
+    )
+    fig.update_xaxes(showgrid=False, zeroline=False, title_text="")
+    fig.update_yaxes(showgrid=True, gridcolor="#E5E5E5", zeroline=False, title_text="")
+    return fig
+
 
 # --- Data loading ---
 @st.cache_data(ttl=300)
@@ -36,7 +107,6 @@ def load_data(file_path: Path) -> dict | None:
     if not file_path.exists():
         return None
     return json.loads(file_path.read_text(encoding="utf-8"))
-
 
 @st.cache_data(ttl=300)
 def load_follower_history(file_path: Path) -> pd.DataFrame:
@@ -47,7 +117,6 @@ def load_follower_history(file_path: Path) -> pd.DataFrame:
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"])
     return df
-
 
 def build_dataframe(data: dict) -> pd.DataFrame:
     rows = []
@@ -60,7 +129,6 @@ def build_dataframe(data: dict) -> pd.DataFrame:
             "media_type": m.get("media_type", "UNKNOWN"),
             "product_type": m.get("media_product_type") or m.get("media_type", "UNKNOWN"),
             "permalink": m.get("permalink", ""),
-            "thumbnail": m.get("thumbnail_url") or m.get("media_url", ""),
             "reach": ins.get("reach", 0) or 0,
             "views": ins.get("views", 0) or 0,
             "likes": ins.get("likes", 0) or 0,
@@ -70,8 +138,7 @@ def build_dataframe(data: dict) -> pd.DataFrame:
             "total_interactions": ins.get("total_interactions", 0) or 0,
         })
     df = pd.DataFrame(rows)
-    if df.empty:
-        return df
+    if df.empty: return df
 
     df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/Vienna")
     df["date"] = df["timestamp"].dt.date
@@ -79,48 +146,38 @@ def build_dataframe(data: dict) -> pd.DataFrame:
     df["month"] = df["timestamp"].dt.to_period("M").astype(str)
     df["weekday"] = df["timestamp"].dt.day_name().map(WEEKDAYS_DE)
     df["hour"] = df["timestamp"].dt.hour
-    df["engagement_rate"] = (
-        df["total_interactions"] / df["reach"].replace(0, pd.NA) * 100
-    ).round(2)
+    df["engagement_rate"] = (df["total_interactions"] / df["reach"].replace(0, pd.NA) * 100).round(2)
 
     def fmt(row):
-        if row["product_type"] == "REELS":
-            return "Reel"
-        if row["product_type"] == "CAROUSEL_ALBUM" or row["media_type"] == "CAROUSEL_ALBUM":
-            return "Karussell"
-        if row["media_type"] == "VIDEO":
-            return "Video"
+        if row["product_type"] == "REELS": return "Reel"
+        if row["product_type"] == "CAROUSEL_ALBUM" or row["media_type"] == "CAROUSEL_ALBUM": return "Karussell"
+        if row["media_type"] == "VIDEO": return "Video"
         return "Bild"
     df["format"] = df.apply(fmt, axis=1)
     return df
 
-
 # --- Account Selection ---
 if not DATA_DIR.exists():
-    st.error("Der Ordner 'data' existiert nicht. Bitte führe zuerst `python fetch_data.py` aus.")
+    st.error("Der Ordner 'data' existiert nicht.")
     st.stop()
 
-# Finde alle verfügbaren Accounts basierend auf den Dateinamen
 available_files = list(DATA_DIR.glob("instagram_data_*.json"))
 if not available_files:
-    st.error("Keine JSON-Dateien im Ordner 'data' gefunden.")
+    st.error("Keine JSON-Dateien im Ordner gefunden.")
     st.stop()
 
 account_names = [f.stem.replace("instagram_data_", "") for f in available_files]
 
 # --- Sidebar ---
 with st.sidebar:
-    st.title("⚙️ Einstellungen")
-    
-    # Dropdown zur Account-Auswahl
-    selected_account = st.selectbox("Instagram Account auswählen", sorted(account_names))
+    st.markdown("## C& ANALYTICS")
+    selected_account = st.selectbox("ACCOUNT AUSWÄHLEN", sorted(account_names), label_visibility="collapsed")
     
     data_file = DATA_DIR / f"instagram_data_{selected_account}.json"
     history_file = DATA_DIR / f"follower_history_{selected_account}.json"
     
     data = load_data(data_file)
     if not data:
-        st.error("Fehler beim Laden der Datei.")
         st.stop()
         
     account = data.get("account", {})
@@ -129,202 +186,112 @@ with st.sidebar:
 
     st.divider()
 
-    # Profil-Infos
-    if account.get("profile_picture_url"):
-        st.image(account["profile_picture_url"], width=80)
-    st.markdown(f"### @{account.get('username', selected_account)}")
-
+    st.markdown(f"**@{account.get('username', selected_account)}**")
     col_a, col_b = st.columns(2)
     col_a.metric("Follower", f"{account.get('followers_count', 0):,}".replace(",", "."))
     col_b.metric("Posts", f"{account.get('media_count', 0):,}".replace(",", "."))
     
-    # NEU: Tagesaktuelle Insights
-    st.markdown("#### Heute (Letzte 24h)")
+    st.markdown("<br><b>HEUTE (24H)</b>", unsafe_allow_html=True)
     col_c, col_d = st.columns(2)
     daily_insights = account.get("daily_insights", {})
     col_c.metric("Profilaufrufe", f"{daily_insights.get('profile_views', 0):,}".replace(",", "."))
     col_d.metric("Link-Klicks", f"{daily_insights.get('website_clicks', 0):,}".replace(",", "."))
 
-    fetched = data.get("fetched_at", "")[:16].replace("T", " ")
-    st.caption(f"🔄 Letztes API-Update: {fetched} UTC")
-
     st.divider()
 
-    # Zeitraum-Filter
-    st.markdown("### 📅 Filter")
+    st.markdown("<b>FILTER</b>", unsafe_allow_html=True)
     min_date = df_all["timestamp"].min().date() if not df_all.empty else date(2025, 1, 1)
     max_date = df_all["timestamp"].max().date() if not df_all.empty else date.today()
-    default_start = max(date(2025, 1, 1), min_date)
-    default_end = min(date(2025, 12, 31), max_date)
 
     date_range = st.date_input(
-        "Zeitraum",
-        value=(default_start, default_end),
-        min_value=min_date,
-        max_value=max_date,
-        format="DD.MM.YYYY",
+        "ZEITRAUM",
+        value=(max(date(2025, 1, 1), min_date), min(date(2025, 12, 31), max_date)),
+        min_value=min_date, max_value=max_date, format="DD.MM.YYYY",
     )
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
     else:
-        start_date, end_date = default_start, default_end
+        start_date, end_date = min_date, max_date
 
     formats_available = sorted(df_all["format"].unique().tolist()) if not df_all.empty else []
-    selected_formats = st.multiselect(
-        "Formate",
-        formats_available,
-        default=formats_available,
-    )
+    selected_formats = st.multiselect("FORMATE", formats_available, default=formats_available)
 
-# --- Filter anwenden ---
-df = df_all[
-    (df_all["timestamp"].dt.date >= start_date)
-    & (df_all["timestamp"].dt.date <= end_date)
-    & (df_all["format"].isin(selected_formats))
-].copy()
+df = df_all[(df_all["timestamp"].dt.date >= start_date) & (df_all["timestamp"].dt.date <= end_date) & (df_all["format"].isin(selected_formats))].copy()
 
 # --- Main Content ---
-st.title("Instagram Analytics Dashboard")
-st.caption(f"Aktueller Filter: **{start_date.strftime('%d.%m.%Y')} – {end_date.strftime('%d.%m.%Y')}**  ·  "
-           f"{len(df)} Posts einbezogen")
+st.title("EDITORIAL DASHBOARD")
+st.markdown(f"**Zeitraum:** {start_date.strftime('%d.%m.%Y')} – {end_date.strftime('%d.%m.%Y')} &nbsp;&nbsp;|&nbsp;&nbsp; **{len(df)} Posts**")
 
 if df.empty:
-    st.warning("Keine Posts im gewählten Zeitraum oder für die gewählten Formate gefunden.")
+    st.warning("Keine Daten im Filter.")
     st.stop()
+
+st.write("") # Spacer
 
 # --- KPI cards ---
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Posts", f"{len(df):,}".replace(",", "."))
-k2.metric("Gesamtreichweite", f"{int(df['reach'].sum()):,}".replace(",", "."))
-k3.metric("Ø Reichweite/Post", f"{int(df['reach'].mean()):,}".replace(",", "."))
-k4.metric("Gesamt-Interaktionen", f"{int(df['total_interactions'].sum()):,}".replace(",", "."))
+k2.metric("Reichweite", f"{int(df['reach'].sum()):,}".replace(",", "."))
+k3.metric("Ø Reichweite", f"{int(df['reach'].mean()):,}".replace(",", "."))
+k4.metric("Interaktionen", f"{int(df['total_interactions'].sum()):,}".replace(",", "."))
 mean_er = df["engagement_rate"].dropna().mean()
-k5.metric("Ø Engagement-Rate", f"{mean_er:.2f}%" if pd.notna(mean_er) else "—")
+k5.metric("Ø Engagement", f"{mean_er:.2f}%" if pd.notna(mean_er) else "—")
 
-st.divider()
+st.markdown("<br>", unsafe_allow_html=True)
 
 # --- Tabs ---
 tab_overview, tab_posts, tab_formats, tab_timing, tab_followers = st.tabs(
-    ["📈 Übersicht", "🏆 Top Posts", "🎨 Formate", "🕐 Posting-Zeiten", "👥 Follower"]
+    ["ÜBERSICHT", "TOP POSTS", "FORMATE", "TIMING", "FOLLOWER"]
 )
 
 # === ÜBERSICHT ===
 with tab_overview:
-    st.subheader("Reichweite über Zeit")
-    daily = (
-        df.groupby("date")[["reach", "total_interactions"]].sum().reset_index()
-    )
-    daily["date"] = pd.to_datetime(daily["date"])
-    fig = px.area(daily, x="date", y="reach", labels={"date": "Datum", "reach": "Reichweite"})
-    fig.update_layout(height=350, margin=dict(t=20, b=20))
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Posts pro Monat")
-    monthly = df.groupby("month").size().reset_index(name="Anzahl Posts")
-    fig2 = px.bar(monthly, x="month", y="Anzahl Posts", labels={"month": "Monat"})
-    fig2.update_layout(height=300, margin=dict(t=20, b=20))
-    st.plotly_chart(fig2, use_container_width=True)
+    st.subheader("Reichweiten-Verlauf")
+    daily = df.groupby("date")[["reach", "total_interactions"]].sum().reset_index()
+    # Schwarze Linie mit grauem Area-Fill drunter
+    fig = px.area(daily, x="date", y="reach", color_discrete_sequence=["#000000"])
+    fig.update_traces(fillcolor='rgba(0,0,0,0.1)', line=dict(width=2))
+    st.plotly_chart(apply_editorial_layout(fig), use_container_width=True)
 
 # === TOP POSTS ===
 with tab_posts:
-    st.subheader("Top Posts nach Reichweite")
-    top_n = st.slider("Anzahl Posts anzeigen", 5, 50, 15)
-    top = df.nlargest(top_n, "reach")[
-        ["timestamp", "format", "caption", "reach", "likes", "comments", "saved", "shares", "engagement_rate", "permalink"]
-    ].copy()
-    top["timestamp"] = top["timestamp"].dt.strftime("%d.%m.%Y %H:%M")
-    top = top.rename(columns={
-        "timestamp": "Datum",
-        "format": "Format",
-        "caption": "Text",
-        "reach": "Reichweite",
-        "likes": "Likes",
-        "comments": "Komm.",
-        "saved": "Speicher.",
-        "shares": "Shares",
-        "engagement_rate": "ER %",
-        "permalink": "Link",
-    })
-    st.dataframe(
-        top,
-        column_config={"Link": st.column_config.LinkColumn("Link", display_text="↗ ansehen")},
-        hide_index=True,
-        use_container_width=True,
-    )
+    st.subheader("Beste Performance")
+    top = df.nlargest(15, "reach")[["timestamp", "format", "caption", "reach", "engagement_rate", "permalink"]].copy()
+    top["timestamp"] = top["timestamp"].dt.strftime("%d.%m.")
+    top = top.rename(columns={"timestamp": "Datum", "format": "Format", "caption": "Text", "reach": "Reichweite", "engagement_rate": "ER %", "permalink": "Link"})
+    st.dataframe(top, column_config={"Link": st.column_config.LinkColumn("Link", display_text="Ansehen")}, hide_index=True, use_container_width=True)
 
 # === FORMATE ===
 with tab_formats:
-    st.subheader("Welches Format funktioniert am besten?")
-    fmt_agg = df.groupby("format").agg(
-        Posts=("id", "count"),
-        Reichweite_Summe=("reach", "sum"),
-        Reichweite_Schnitt=("reach", "mean"),
-        Interaktionen_Schnitt=("total_interactions", "mean"),
-        ER_Schnitt=("engagement_rate", "mean"),
-    ).round(1).reset_index()
-    st.dataframe(fmt_agg, hide_index=True, use_container_width=True)
-
+    st.subheader("Format Analyse")
+    fmt_agg = df.groupby("format").agg(Posts=("id", "count"), Reichweite=("reach", "mean"), ER=("engagement_rate", "mean")).round(1).reset_index()
+    
     col1, col2 = st.columns(2)
     with col1:
-        fig = px.bar(fmt_agg, x="format", y="Reichweite_Schnitt",
-                     title="Ø Reichweite pro Format", labels={"format": "Format"})
-        fig.update_layout(height=350)
-        st.plotly_chart(fig, use_container_width=True)
+        fig = px.bar(fmt_agg, x="format", y="Reichweite", title="Ø REICHWEITE PRO FORMAT", color_discrete_sequence=["#000000"])
+        st.plotly_chart(apply_editorial_layout(fig), use_container_width=True)
     with col2:
-        fig = px.bar(fmt_agg, x="format", y="ER_Schnitt",
-                     title="Ø Engagement-Rate pro Format", labels={"format": "Format"})
-        fig.update_layout(height=350)
-        st.plotly_chart(fig, use_container_width=True)
+        fig = px.bar(fmt_agg, x="format", y="ER", title="Ø ENGAGEMENT PRO FORMAT", color_discrete_sequence=["#666666"])
+        st.plotly_chart(apply_editorial_layout(fig), use_container_width=True)
 
 # === TIMING ===
 with tab_timing:
-    st.subheader("Wann ist die beste Zeit zum Posten?")
-
-    pivot = df.pivot_table(values="reach", index="weekday", columns="hour",
-                           aggfunc="mean", fill_value=0)
+    st.subheader("Performance nach Zeit")
+    pivot = df.pivot_table(values="reach", index="weekday", columns="hour", aggfunc="mean", fill_value=0)
     pivot = pivot.reindex([d for d in WEEKDAY_ORDER if d in pivot.index])
-
-    fig = px.imshow(
-        pivot,
-        labels=dict(x="Uhrzeit", y="Wochentag", color="Ø Reichweite"),
-        aspect="auto",
-        color_continuous_scale="Viridis",
-    )
-    fig.update_layout(height=400)
+    
+    # Monochromes (Graustufen) Mapping für die Heatmap
+    fig = px.imshow(pivot, aspect="auto", color_continuous_scale="gray_r")
+    fig = apply_editorial_layout(fig)
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(showgrid=False)
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("Heatmap: Zeigt die durchschnittliche Reichweite je Wochentag und Uhrzeit. "
-               "Dunkle Felder bedeuten, dass in diesem Slot kaum oder gar nicht gepostet wurde.")
 
 # === FOLLOWER ===
 with tab_followers:
-    st.subheader("Follower-Wachstum")
-    if follower_history.empty or len(follower_history) < 2:
-        st.info(
-            "Der Follower-Verlauf wird ab jetzt jeden Tag um 04:00 Uhr gespeichert. "
-            "Sobald morgen der zweite Datenpunkt generiert wurde, siehst du hier den Wachstums-Graphen."
-        )
+    st.subheader("Community Wachstum")
+    if len(follower_history) < 2:
+        st.info("Daten werden ab heute gesammelt. Der Graph erscheint morgen.")
     else:
-        fig = px.line(
-            follower_history, x="date", y="followers",
-            labels={"date": "Datum", "followers": "Follower"},
-            markers=True,
-        )
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
-
-        first, last = follower_history.iloc[0], follower_history.iloc[-1]
-        delta = last["followers"] - first["followers"]
-        days = (last["date"] - first["date"]).days or 1
-        
-        st.markdown("### Entwicklung")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Aktueller Stand", f"{last['followers']:,}".replace(",", "."))
-        c2.metric("Wachstum im Zeitraum", f"{delta:+,}".replace(",", "."))
-        c3.metric("Ø Wachstum pro Tag", f"{delta/days:+.1f}".replace(".", ","))
-
-st.divider()
-st.caption(
-    "Dashboard basierend auf der offiziellen Instagram Graph API · "
-    f"API-Version {data.get('api_version', '?')} · "
-    "Daten werden automatisch täglich via GitHub Actions aktualisiert."
-)
+        fig = px.line(follower_history, x="date", y="followers", color_discrete_sequence=["#000000"], markers=True)
+        st.plotly_chart(apply_editorial_layout(fig), use_container_width=True)
