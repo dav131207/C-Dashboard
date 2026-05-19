@@ -1,60 +1,45 @@
-name: Fetch Instagram Data
+name: Refresh Instagram Data
 
 on:
   schedule:
-    - cron: '0 4 * * *' # Läuft täglich um 04:00 Uhr UTC
-  workflow_dispatch:    # Erlaubt das manuelle Starten über den GitHub-Button
+    # Täglich um 03:00 UTC (~05:00 Wien)
+    - cron: "0 3 * * *"
+  workflow_dispatch:  # Manuell auslösbar
+
+permissions:
+  contents: write
 
 jobs:
-  fetch-data:
+  refresh:
     runs-on: ubuntu-latest
-    
-    # Zwingend erforderlich für den fehlerfreien Git Push (Schreibrechte)
-    permissions:
-      contents: write
-          
-    strategy:
-      # Verhindert Speicher-Konflikte, indem die Accounts nacheinander verarbeitet werden
-      max-parallel: 1
-      matrix:
-        # Hier definieren wir die beiden Accounts
-        account: [account_1, account_2]
-
     steps:
-      - name: Checkout Repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-          cache: 'pip' # Beschleunigt zukünftige Durchläufe
+          python-version: "3.12"
+          cache: "pip"
 
-      - name: Install Dependencies
-        run: pip install requests
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-      # Führt das neue, kombinierte Skript aus (holt Organisch + Ads + Collabs)
-      - name: Run Fetcher Script for ${{ matrix.account }}
-        run: python fetch_data.py
+      - name: Fetch Instagram data
         env:
-          # Dynamische Zuweisung der Standard-Secrets
-          INSTAGRAM_USER_ID: ${{ matrix.account == 'account_1' && secrets.INSTAGRAM_USER_ID_1 || secrets.INSTAGRAM_USER_ID_2 }}
-          INSTAGRAM_ACCESS_TOKEN: ${{ matrix.account == 'account_1' && secrets.INSTAGRAM_ACCESS_TOKEN_1 || secrets.INSTAGRAM_ACCESS_TOKEN_2 }}
-          # Dynamische Zuweisung der neuen Ad Account IDs für das Ads-Mapping
-          AD_ACCOUNT_ID: ${{ matrix.account == 'account_1' && secrets.AD_ACCOUNT_ID_1 || secrets.AD_ACCOUNT_ID_2 }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+          AD_ACCOUNT_ID: ${{ secrets.AD_ACCOUNT_ID }}
+        run: python fetch_data.py
 
-      # Speichert alle generierten Daten und Thumbnails sauber ab
-      - name: Commit and Push changes
+      - name: Commit & push updated data
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
-          
-          # Speichert die Änderungen lokal, bricht aber nicht ab, falls es keine gibt
-          git commit -m "Update Instagram & Ads data for ${{ matrix.account }}" || echo "No changes to commit"
-          
-          # Holt sich den aktuellsten Stand aus dem Repository (wichtig für den 2. Account in der Matrix)
-          git pull --rebase origin main
-          
-          # Schiebt die fertigen Dateien ins Repository
-          git push
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: refresh Instagram data ($(date -u +%Y-%m-%d))"
+            git push
+          fi
