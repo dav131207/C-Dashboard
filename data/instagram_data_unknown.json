@@ -1,0 +1,21 @@
+{
+  "fetched_at": "2026-07-18T05:14:30.848098+00:00",
+  "api_version": "v21.0",
+  "account": {
+    "daily_insights": {},
+    "demographics": {
+      "age": [],
+      "gender": [],
+      "country": [],
+      "city": []
+    }
+  },
+  "media": [],
+  "dark_ads": [],
+  "ads_summary": {
+    "total_ads": 0,
+    "boosted_posts": 0,
+    "dark_ads": 0,
+    "total_spend": 0
+  }
+}
